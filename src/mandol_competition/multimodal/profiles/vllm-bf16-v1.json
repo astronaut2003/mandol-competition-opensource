@@ -1,0 +1,51 @@
+{
+  "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
+  "embedding_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+  "embedding_dimension": 1024,
+  "tokenizer_fingerprint": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+  "splade_model": "naver/splade-v3",
+  "splade_revision": "fdfeceb91d7b9de7985b38addd3ba9f53a59a355",
+  "preprocessing_fingerprint": "fdd6d7026464597cd31d90291ec4016b32bd428aa1cdd8c6b4284e2804458182",
+  "bm25_profile": "mandol-regex-v1",
+  "bm25_k1": 1.5,
+  "bm25_b": 0.75,
+  "methods": [
+    "bm25",
+    "cosine",
+    "splade"
+  ],
+  "fusion": "rrf",
+  "rrf_k": 60,
+  "options": {
+    "text_mode": "regex",
+    "jieba": false,
+    "model_device": "external-http",
+    "dense_max_length": 4096,
+    "dense_query_prompt": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+    "dense_microbatch": 1,
+    "dense_dtype": "bfloat16",
+    "splade_microbatch": 1,
+    "splade_max_length": 512,
+    "splade_dtype": "bfloat16",
+    "candidate_k": 100,
+    "rerank_method": "baai",
+    "reranker_model": "BAAI/bge-reranker-v2-m3",
+    "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "reranker_max_length": 4096,
+    "reranker_microbatch": 1,
+    "inference_recipe": "multimodal-vllm-bf16-v1",
+    "runtime": {
+      "vllm": "0.25.1",
+      "torch": "2.11.0",
+      "transformers": "5.14.1"
+    },
+    "vllm_version": "0.25.1",
+    "reranker_dtype": "bfloat16",
+    "representation_policy": "mm-representation-v1",
+    "query_policy": "mm-query-v1",
+    "query_use_options": true
+  },
+  "schema_version": 1,
+  "milvus_version": "2.6.22",
+  "pymilvus_version": "2.6.17"
+}

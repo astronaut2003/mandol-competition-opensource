@@ -1,0 +1,21 @@
+{
+  "format": "mandol-serving-bindings-v1",
+  "models": {
+    "querit-4b": {
+      "model": "Querit/Querit-4B",
+      "revision": "e557bb5ce6555f16b33dbb7d2ca62e8d27c14c13",
+      "root": "/models/Querit-4B",
+      "served_alias": "querit-4b",
+      "vllm_version": "0.29.0",
+      "dtype": "bfloat16"
+    },
+    "BAAI/bge-reranker-v2-m3": {
+      "model": "BAAI/bge-reranker-v2-m3",
+      "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+      "root": "/models/bge-reranker-v2-m3",
+      "served_alias": "BAAI/bge-reranker-v2-m3",
+      "vllm_version": "0.25.1",
+      "dtype": "bfloat16"
+    }
+  }
+}

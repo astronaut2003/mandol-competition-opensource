@@ -1,0 +1,29 @@
+# Deployment template: replace the VLM placeholder with your provider endpoint.
+# Use fresh runtime storage. TOML does not expand shell environment variables.
+[global]
+runtime_root = "data"
+qdrant_endpoint = "http://127.0.0.1:6333"
+log_level = "INFO"
+
+[textual]
+namespace = "mandol-public-reproduction-v1"
+inference_contract = "aml-official-eligible-v1"
+[textual.inference]
+embedding = "http://127.0.0.1:18620"
+sparse = "http://127.0.0.1:18620"
+reranker = "http://127.0.0.1:8003"
+
+[code]
+namespace = "mandol-public-reproduction-v1"
+inference_contract = "aml-official-eligible-v1"
+[code.inference]
+embedding = "http://127.0.0.1:18620"
+
+[multimodal]
+namespace = "mandol-public-reproduction-v1"
+inference_contract = "aml-official-eligible-v1"
+[multimodal.inference]
+embedding = "http://127.0.0.1:18620"
+sparse = "http://127.0.0.1:18620"
+reranker = "http://127.0.0.1:18621"
+vlm = "https://vlm.example.invalid/v1"

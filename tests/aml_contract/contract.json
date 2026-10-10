@@ -1,0 +1,32 @@
+{
+  "checked_at": "2026-10-07T00:00:00+08:00",
+  "cycle": 2,
+  "sources": [
+    "https://agentmemories.ai/zh-cn/docs",
+    "https://agentmemories.ai/api-guide",
+    "https://agentmemories.ai/blog?post=phase2-faq-20260920"
+  ],
+  "tracks": ["textual", "code", "multimodal"],
+  "add_required": ["request_id", "messages", "user_id", "session_id"],
+  "message_roles": ["user", "assistant"],
+  "timestamp": "optional strict integer Unix milliseconds",
+  "add_success": {"http_status": 200, "success": true, "echo": ["request_id", "user_id", "session_id"]},
+  "search_required": ["query", "user_id", "top_k"],
+  "search_options": "optional top-level array of strings",
+  "formal_top_k": 100,
+  "search_wrapper": "data",
+  "search_item_required": ["id", "content"],
+  "score": "optional finite number, larger is more relevant",
+  "auth": ["Token", "Bearer", "X-Api-Key"],
+  "health": {"method": "GET", "authenticated": false, "healthy_status": "2xx", "internal_configuration": "must not disclose"},
+  "multimodal_query": ["string", "ordered ContentPart[]"],
+  "image_mimes": ["image/jpeg", "image/png", "image/webp"],
+  "image_transport": "inline Base64 Data URI",
+  "max_decoded_image_bytes": 10485760,
+  "max_decoded_add_or_response_image_bytes": 31457280,
+  "maximum_request_seconds": 1800,
+  "add_transient_status": [408, 409, 425, 429, 500, 502, 503, 504, 524],
+  "search_transient_status": [408, 425, 429, 500, 502, 503, 504],
+  "aml_add_attempts_max": 32,
+  "retention": "remove task data and derivatives within 30 days after task completion"
+}

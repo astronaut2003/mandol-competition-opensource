@@ -1,0 +1,147 @@
+{
+  "profile": {
+    "activation": {
+      "application_config": "configs/deployment/aml-eligible-four-node-fp16.example.toml",
+      "collection": "multimodal_aml_v4_v1",
+      "factory": "mandol_competition.runtime.apps:multimodal",
+      "fresh_runtime_required": true,
+      "inference_contract": "aml-official-eligible-v1",
+      "namespace": "multimodal-aml-v4",
+      "note": "Release-selection metadata; inject rendered deployment endpoints/profile, not this file as an API quality schema.",
+      "unset_experimental_candidates": true,
+      "workers": 1
+    },
+    "application_source_sha256": "daa7a7ac825493442ed5334b51f73b4f2510aae29f543d02963f1ee00c62a17f",
+    "board_eligibility": "NEEDS_ORGANIZER_CONFIRMATION",
+    "decision": "BASELINE_RETAINED_NO_STABLE_PROMOTION",
+    "evaluation_receipts": {
+      "mm/development-analysis.json": "9993bf9663cafe3ef63bcda97b6084c3fa14ab576007b85d5c0a6ec9606fc3a6",
+      "mm/final-analysis.json": "2b8b48e1a22215c632b5090664c7fad580788df546f887f2621ff9e55f75585b",
+      "mm/held_out-analysis.json": "5638f0129fb8dd0214e4c19f4e1dbe97cc5296bb42e7ddf0cb349cfb2904f74f",
+      "mm/phase-complete.json": "780e07220a8d7ac937b4bec8ff507e32718987ee2e6c0f5617e05da11a0478fa",
+      "mm/selection-analysis.json": "8a2780b127a0eb1acb8957e6e79ee3a50229d37edacc2125a9cd68b615c31f1a"
+    },
+    "id": "multimodal-submission-final",
+    "implementation_commit": "b6ec254f24676207ca550ce68b4b58aabcdacbca",
+    "local_gates": {
+      "NATIVE_LONGEVITY": {
+        "receipt_sha256": "1dcdce8d25307b39f6841548e2240060fc8f6a84ddd0ead2a6fcbc368cb7122c",
+        "status": "PASS"
+      },
+      "REAL_NATIVE_STACK": {
+        "receipt_sha256": "5aa589c469d73f90589ac7d7723bec9c91b190ab983f332f833dcc533d2e38c3",
+        "status": "PASS"
+      },
+      "UNIT_FAKE_AND_REAL_STORAGE_REGRESSION": {
+        "receipt_sha256": "0a30ea51d693329cc39297f4b2f93b128e480f26686fed18f0d2baacad7ce8d4",
+        "status": "PASS"
+      }
+    },
+    "models": {
+      "dense": {
+        "channel": "embedding",
+        "contract": "dashscope-native-v4-paired-http-v1",
+        "dimension": 1024,
+        "document_prompt": "",
+        "dtype": "provider-managed-unattested",
+        "max_length": 8192,
+        "model_id": "text-embedding-v4",
+        "model_revision": "provider-managed-unattested",
+        "normalization": "provider-l2-validated",
+        "pooling": "provider-native",
+        "query_prompt": "",
+        "recipe_id": "aml-text-embedding-v4-dense-v1",
+        "score_semantics": "higher-is-more-relevant",
+        "served_alias": "text-embedding-v4",
+        "sparse_threshold": 0.0,
+        "tokenizer_revision": "provider-managed-unattested",
+        "truncation": "provider-reject-over-limit-no-client-truncation"
+      },
+      "generative": {
+        "logical_model": "gpt-4o-mini-closeai",
+        "observed_response_model": "gpt-4o-mini-2024-07-18",
+        "offline_proxy_roles": [
+          "Answer",
+          "Eval"
+        ],
+        "runtime_roles": [
+          "VLM"
+        ],
+        "search_answer_generation": false,
+        "vlm_prompt_sha256": "a8375dcce0fe030fa597c0210480b281562b778187fd0f7b06d5dc4a3756ef62",
+        "vlm_prompt_version": "multimodal_sgm_v1",
+        "vlm_schema_version": "1",
+        "wire_model": "gpt-4o-mini"
+      },
+      "reranker": {
+        "http_contract": "mandol-inference-http-v1",
+        "max_length": 4096,
+        "model_id": "BAAI/bge-reranker-v2-m3",
+        "observed_local_dtype": "bfloat16",
+        "observed_local_recipe_id": "aml-score-research-bf16-v1-reranker",
+        "planned_production_dtype": "float16",
+        "precision_parity": "NOT_TESTED",
+        "production_admission": "NOT_TESTED",
+        "prompt_sha256": null,
+        "query_document_pair": true,
+        "revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+        "score_direction": "higher-is-more-relevant",
+        "score_semantics": "sigmoid-higher-is-relevant"
+      },
+      "sparse": {
+        "channel": "sparse",
+        "contract": "dashscope-native-v4-paired-http-v1",
+        "dimension": 4294967296,
+        "document_prompt": "",
+        "dtype": "provider-managed-unattested",
+        "max_length": 8192,
+        "model_id": "text-embedding-v4",
+        "model_revision": "provider-managed-unattested",
+        "normalization": "none",
+        "pooling": "provider-native",
+        "query_prompt": "",
+        "recipe_id": "aml-text-embedding-v4-sparse-v1",
+        "score_semantics": "higher-is-more-relevant",
+        "served_alias": "text-embedding-v4",
+        "sparse_threshold": 0.0,
+        "tokenizer_revision": "provider-managed-unattested",
+        "truncation": "provider-reject-over-limit-no-client-truncation"
+      }
+    },
+    "quality": {
+      "candidate_k": 100,
+      "fusion": "rrf",
+      "query_policy": "mm-query-v1",
+      "query_use_options": true,
+      "representation": "mm-representation-v1",
+      "reranker": "BAAI/bge-reranker-v2-m3",
+      "rrf_k": 60,
+      "selector": "OFF"
+    },
+    "remaining_gates": {
+      "division_and_prize_mapping": "NEEDS_ORGANIZER_CONFIRMATION",
+      "formal_Full": "NOT_REQUESTED",
+      "native_sparse_rule_classification": "NEEDS_ORGANIZER_CONFIRMATION",
+      "platform_Smoke": "NOT_TESTED",
+      "production_FP16_admission": "NOT_TESTED",
+      "provider_identity_attestation": "NEEDS_ORGANIZER_CONFIRMATION"
+    },
+    "schema": "mandol-submission-selection-v1",
+    "score_class": "PROXY; public components only, not official AML score",
+    "selected_arm": "M0",
+    "semantic_artifact_hashes": {
+      "configs/profiles/aml-official-eligible/multimodal-v1.json": "abeb011ee2cebdb50253f727bd242e525a1ab8f85e3686e475a635634f8d9d84",
+      "src/mandol_competition/multimodal/vlm/prompt.py": "36001196f07d8005a1ca1df9a40ab2e75352ad90925e340983f1682281fe57e6"
+    },
+    "source_attribution": {
+      "eligibility": "docs/qualification/AML-Official-Model-Eligibility.md",
+      "public_components": "https://github.com/AML-memory/agent-memory-leaderboard",
+      "rules": "docs/research/AML-Score-Maximization-Contract-202610.md",
+      "study": "docs/optimization/AML-Score-Maximization-Final.md"
+    },
+    "submission_ready": false,
+    "target_division": "Academic / Open-source Methods; mapping unconfirmed",
+    "track": "multimodal"
+  },
+  "profile_sha256": "4af0e6ef21e4ba95caa8cfae55cce8b4bc27754d8e13a10c8834232ff2156f8a"
+}

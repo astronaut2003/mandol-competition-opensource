@@ -1,0 +1,43 @@
+{
+  "components": {
+    "context": {
+      "file": "context.json",
+      "sha256": "fad46ca6e7d7297a3ddc3c0e8eee424e1f4a3f4bfc545f34cc62ee6a5f4091e3"
+    },
+    "execution": {
+      "file": "execution.json",
+      "sha256": "a809ef8b4bb8bfc87fd5adbe8f5dbd7755de7060b4b1a58157c3b740cb530305"
+    },
+    "profile": {
+      "file": "profile.json",
+      "sha256": "851113b4480cd00b8c922e20cb0ac977750881ac7440701fb21f10eeb0ed58df"
+    },
+    "query": {
+      "file": "query.json",
+      "sha256": "6b617217a332c0da63e7187deeacbc3e487ef2ba2a5cd65b986a8968a008df35"
+    },
+    "returns": {
+      "file": "returns.json",
+      "sha256": "93777201319851f81222f441080cc7cae2a887f0c6fcf3b1999c967ca97daa16"
+    }
+  },
+  "model_eligibility": "NEEDS_ORGANIZER_CONFIRMATION",
+  "origin_quality_sha256": "c356596afc07fdbf76c2e1c80f42f3cf6c8ece038fac1bd34eea98063d5ed2d3",
+  "physical_change": {
+    "dense": "text-embedding-v4",
+    "sparse": "text-embedding-v4 provider-native; sparse allowance needs confirmation"
+  },
+  "profile_id": "aml-official-eligible-textual-v1",
+  "schema": "mandol-frozen-public-quality-profile-v1",
+  "status": "NAMED_MODEL_INTEGRATION_NOT_SUBMISSION_APPROVAL",
+  "storage_profile_hash": "45311ac7fc6505ad2837bf02f86a5e706b4246a27c5de9695bb92e2abbc69f9e",
+  "unchanged_quality_policy": [
+    "SQLite BM25",
+    "RRF60",
+    "Querit reference and B1 execution",
+    "source_mention",
+    "final10",
+    "context24000",
+    "HLM_OFF"
+  ]
+}

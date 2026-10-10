@@ -1,0 +1,4 @@
+Mandol inference bridges derive from the Mandol competition implementation.
+Inherited Apache-2.0 text is preserved in LICENSE.
+See ../../docs/ATTRIBUTION.md for sources and applicable third-party terms.
+No model tensors or vendor remote model implementation are bundled.

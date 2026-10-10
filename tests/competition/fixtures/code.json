@@ -1,0 +1,23 @@
+{
+  "add": {
+    "request_id": "请求 r ",
+    "user_id": " user/隔离 ",
+    "session_id": " session ",
+    "messages": [
+      {
+        "role": "user",
+        "content": "  def Orion():\n    return \"red backpack\"\n",
+        "timestamp": 1700000000123
+      }
+    ]
+  },
+  "search": {
+    "query": "Orion",
+    "user_id": " user/隔离 ",
+    "top_k": 100,
+    "options": [
+      "Orion",
+      "other"
+    ]
+  }
+}

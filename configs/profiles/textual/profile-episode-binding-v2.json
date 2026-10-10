@@ -1,0 +1,13 @@
+{
+  "base_storage_profile_hash": "df3d7b5b2ed23d171d0c0048ec221866051410bb22a1e9cfe256e2986faf9b3e",
+  "policy": {
+    "hierarchical_enabled": false,
+    "episodic_enabled": true,
+    "entity_relation_enabled": false,
+    "profile_enabled": true,
+    "navigation_enabled": true,
+    "semantic_evidence_enabled": false,
+    "semantic_frame_enabled": false
+  },
+  "recipe_fingerprint": "783cab37b829cad6deb1eefa0b10fee16173add525227ad62e385b574144e782"
+}

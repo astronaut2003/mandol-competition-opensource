@@ -1,0 +1,25 @@
+Mandol Competition
+
+This project derives from Mandol, maintained by the Mandol Team:
+https://github.com/AgentCombo/Mandol
+Copyright 2024-2026 Mandol Team. Apache License, Version 2.0.
+The original copyright and license text are retained in LICENSE.
+
+Original technical report:
+Yuhan Zhang, Zhiyuan Guo, Ziheng Zeng, Wei Wang, Wentao Wu, and Lijie Xu.
+Mandol: An Agglomerative Agent Memory System for Long-Term Conversations.
+arXiv:2606.29778 (2026), https://arxiv.org/abs/2606.29778.
+
+Competition-specific modifications include independent Textual, Coding and
+Multimodal AML APIs; a shared canonical SQLite/publication substrate;
+rebuildable Qdrant projections; HTTP inference and checked model contracts;
+request replay, physical track isolation and recovery; coding episode evidence;
+multimodal image validation, content-addressed media and image restoration.
+This is a competition implementation, not the upstream paper artifact.
+
+The substrate's original NOTICE is additionally retained in
+packages/substrate/NOTICE. Its historical description does not describe every
+later unified-repository change. See docs/ATTRIBUTION.md for the current scope.
+Model weights, datasets and separately retrieved AML evaluation sources are not
+distributed with this project. External models and dependencies retain their
+own licenses/terms.

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "mandol-inference-worker"
+version = "0.1.0"
+description = "CPU HTTP bridges and optional model adapters for Mandol Competition"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12,<3.13"
+dependencies = ["mandol-competition[multimodal]==0.1.0"]
+
+[project.optional-dependencies]
+# The HTTP bridge is CPU-only. Legacy model workers need an isolated environment.
+models = ["torch==2.8.0", "transformers==4.57.6", "sentence-transformers==5.4.1"]
+[tool.setuptools.packages.find]
+where = ["src"]

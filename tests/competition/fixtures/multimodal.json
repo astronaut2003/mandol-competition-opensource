@@ -1,0 +1,39 @@
+{
+  "add": {
+    "request_id": "请求 r ",
+    "user_id": " user/隔离 ",
+    "session_id": " session ",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAFElEQVR4nGPkEpFjgAEmBiSAmwMADKgARF46dO4AAAAASUVORK5CYII="
+            }
+          },
+          {
+            "type": "text",
+            "text": "evidence Orion red backpack"
+          }
+        ],
+        "timestamp": 1700000000123
+      }
+    ]
+  },
+  "search": {
+    "query": [
+      {
+        "type": "text",
+        "text": "Orion"
+      }
+    ],
+    "user_id": " user/隔离 ",
+    "top_k": 100,
+    "options": [
+      "Orion",
+      "other"
+    ]
+  }
+}
