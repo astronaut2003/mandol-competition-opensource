@@ -171,6 +171,6 @@ def test_different_recipe_and_duplicate_endpoints_fail_closed(monkeypatch):
     clients[1].expected_profile = {'model': 'other'}
     with pytest.raises(ProfileMismatch):
         ReplicaReranker(clients)
-    monkeypatch.setenv('MANDOL_TEXTUAL_RERANKER_REPLICAS', 'http://10.77.0.9:8003,http://10.77.0.9:8003')
+    monkeypatch.setenv('MANDOL_TEXTUAL_RERANKER_REPLICAS', 'http://10.0.0.12:8003,http://10.0.0.12:8003')
     with pytest.raises(ValueError):
-        replica_endpoints('textual', 'http://10.77.0.9:8003')
+        replica_endpoints('textual', 'http://10.0.0.12:8003')

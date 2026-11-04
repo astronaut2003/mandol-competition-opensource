@@ -3,20 +3,46 @@
 This bridge exposes the provider's native query/document dense+sparse response.
 It does not load models, assert a provider weight revision, or apply Qwen prompts.
 """
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import asdict
+from datetime import datetime, timezone
+import json
+import logging
 import math
 import os
+import re
 import threading
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from mandol_competition.inference.dashscope import (
     DashScopeEmbeddingClient, MODEL, official_embedding_recipes,
 )
-from mandol_competition.inference.errors import InferenceUnavailable
+from mandol_competition.inference.errors import InferenceAdmissionDeferred, InferenceDeadlineExceeded, InferenceUnavailable
 from mandol_competition.inference.http import deadline_budget
+
+
+def _failure_metadata(exc, mode):
+    """Never include provider messages, request/response bodies or input text."""
+    row = {'timestamp': datetime.now(timezone.utc).isoformat(),
+           'event': 'embedding_failure', 'model': MODEL, 'operation': mode,
+           'exception_type': type(exc).__name__}
+    error_class = getattr(exc, 'error_class', None)
+    known = {'provider_rate_limited', 'deadline_before_dispatch', 'embedding_query_capacity',
+             'embedding_input_rejected', 'provider_budget_store_unavailable', 'backpressure',
+             'ReadTimeout', 'ReadError', 'WriteTimeout', 'WriteError', 'ConnectTimeout',
+             'ConnectError', 'PoolTimeout', 'RemoteProtocolError', 'deadline', 'attempts_exhausted'}
+    if error_class in known or error_class == 'http_' + str(getattr(exc, 'status_code', None)):
+        row['error_class'] = error_class
+    for name in ('provider_error_code', 'provider_request_id'):
+        value = getattr(exc, name, None)
+        if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value):
+            row[name] = value
+    status = getattr(exc, 'status_code', None)
+    if type(status) is int and 100 <= status <= 599:
+        row['upstream_http_status'] = status
+    return row
 
 
 class ProviderRecovery:
@@ -29,6 +55,7 @@ class ProviderRecovery:
         self._stopping = False
         self._available = True
         self._generation = self._failures = self._probes = self._recoveries = 0
+        self._admission_deferrals = 0
         self._next_probe = None
         self._worker = threading.Thread(target=self._run, name='v4-recovery', daemon=True)
         self._worker.start()
@@ -37,6 +64,7 @@ class ProviderRecovery:
         with self._condition:
             return {'available': self._available, 'failures': self._failures,
                     'recovery_probes': self._probes, 'recoveries': self._recoveries,
+                    'admission_deferrals': self._admission_deferrals,
                     'next_probe_seconds': max(0., self._next_probe-time.monotonic())
                         if self._next_probe is not None else None}
 
@@ -59,6 +87,19 @@ class ProviderRecovery:
             self._failures = 0
             self._next_probe = None
             self._condition.notify_all()
+
+    def deferred(self, error):
+        """No provider result: preserve availability and any genuine failure."""
+        delay = getattr(error, 'retry_after', None)
+        if type(delay) not in (int, float) or not math.isfinite(delay) or delay < 0:
+            delay = self.delay
+        with self._condition:
+            self._admission_deferrals += 1
+            if not self._available:
+                self._next_probe = max(self._next_probe or 0., time.monotonic()+max(.1, delay))
+                self._condition.notify_all()
+            # Do not invalidate an inflight real probe's generation: its actual
+            # result is stronger evidence than this unrelated local deferral.
 
     def _run(self):
         while True:
@@ -93,6 +134,8 @@ class ProviderRecovery:
                 if error is None:
                     self._recoveries += 1
                     self.succeeded()
+                elif isinstance(error, (InferenceAdmissionDeferred, InferenceDeadlineExceeded)):
+                    self.deferred(error)
                 else:
                     self.failed(error)
 
@@ -107,6 +150,13 @@ class ProviderRecovery:
 
 def create_app(client_factory=None, *, recovery_delay=5.):
     dense, sparse = official_embedding_recipes()
+    logger = logging.getLogger('mandol_inference.embedding.diagnostics')
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(handler)
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -144,7 +194,7 @@ def create_app(client_factory=None, *, recovery_delay=5.):
     def recipe():
         return {"recipes": [{"hash": r.hash, "recipe": asdict(r)} for r in (dense, sparse)]}
 
-    def encode(body, channel):
+    def encode(body, channel, request):
         if not isinstance(body, dict) or body.get("model") != MODEL:
             raise HTTPException(409, "model_identity_mismatch")
         if channel == "pair":
@@ -163,12 +213,47 @@ def create_app(client_factory=None, *, recovery_delay=5.):
                 or not 1 <= len(texts) <= 1024):
             raise HTTPException(422, "invalid_encoding_request")
         try:
-            pairs = app.state.client.encode(texts, query=mode == "query")
+            from mandol_competition.inference.budget import from_environment
+            reliability = from_environment()
+            context = nullcontext()
+            if reliability is not None:
+                try:
+                    remaining = float(request.headers.get('X-Mandol-Deadline-Seconds', reliability.seconds))
+                except (TypeError, ValueError):
+                    remaining = reliability.seconds
+                if not math.isfinite(remaining) or remaining <= 0:
+                    remaining = reliability.seconds
+                context = deadline_budget(min(remaining, reliability.seconds))
+            with context:
+                pairs = app.state.client.encode(texts, query=mode == "query")
         except ValueError:
             raise HTTPException(422, "invalid_encoding_request") from None
         except InferenceUnavailable as exc:
-            app.state.recovery.failed(exc)
-            raise HTTPException(503, "provider_inference_unavailable") from None
+            logger.error(json.dumps(_failure_metadata(exc, mode), allow_nan=False))
+            permanent_input = exc.status_code in {400, 413, 422}
+            if permanent_input:
+                pass  # A rejected input does not make a healthy provider fail admission.
+            elif isinstance(exc, (InferenceAdmissionDeferred, InferenceDeadlineExceeded)):
+                app.state.recovery.deferred(exc)
+            else:
+                app.state.recovery.failed(exc)
+            headers = {}
+            for field, header in (('provider_error_code', 'X-Mandol-Upstream-Code'),
+                                  ('provider_request_id', 'X-Mandol-Upstream-Request-ID')):
+                value = getattr(exc, field, None)
+                if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value):
+                    headers[header] = value
+            if permanent_input:
+                headers['X-Mandol-Input-Rejected'] = '1'
+                raise HTTPException(exc.status_code, 'provider_input_rejected', headers=headers) from None
+            if exc.status_code == 429:
+                delay = exc.retry_after
+                if type(delay) not in (int, float) or not math.isfinite(delay) or delay < 0:
+                    delay = 60.
+                headers['Retry-After'] = str(math.ceil(delay))
+                raise HTTPException(429, 'provider_rate_limited',
+                                    headers=headers) from None
+            raise HTTPException(503, "provider_inference_unavailable", headers=headers) from None
         app.state.recovery.succeeded()
         rows = []
         for index, pair in enumerate(pairs):
@@ -178,16 +263,16 @@ def create_app(client_factory=None, *, recovery_delay=5.):
         return {"model": MODEL, "data": rows}
 
     @app.post("/v1/encode")
-    def paired(body: dict):
-        return encode(body, "pair")
+    def paired(body: dict, request: Request):
+        return encode(body, "pair", request)
 
     @app.post("/v1/embeddings")
-    def embeddings(body: dict):
-        return encode(body, "embedding")
+    def embeddings(body: dict, request: Request):
+        return encode(body, "embedding", request)
 
     @app.post("/v1/sparse")
-    def sparse_encode(body: dict):
-        return encode(body, "sparse")
+    def sparse_encode(body: dict, request: Request):
+        return encode(body, "sparse", request)
 
     from .observability import install_bridge_observability
     install_bridge_observability(app, ready=health,

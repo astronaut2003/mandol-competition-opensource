@@ -44,6 +44,15 @@ authorized_keys
 secrets/
 configs/local/
 # Runtime, downloaded data, models and experiment artifacts
+work/
+outputs/
+legacy/
+benchmarks/
+experiments/
+private/
+reports/
+results/
+*.har
 data/
 runs/
 models/

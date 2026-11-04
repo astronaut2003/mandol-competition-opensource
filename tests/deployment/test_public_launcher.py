@@ -13,6 +13,10 @@ ROOT = Path(__file__).resolve().parents[2]
     ('AML_CODING_ANCHOR_WEIGHT', '0.5'),
     ('MANDOL_MM_VLM_MODEL', 'unapproved-model'),
     ('MANDOL_MM_PROMPT_VERSION', 'different-prompt'),
+    ('MANDOL_MM_EVIDENCE_POLICY', 'baseline'),
+    ('MANDOL_MM_EVIDENCE_POLICY', 'source-grounded-delivery-v3'),
+    ('MANDOL_MM_VISION_FAILURE_POLICY', 'degrade'),
+    ('MANDOL_MM_VLM_MAX_OUTPUT_TOKENS', '16384'),
 ])
 def test_launcher_refuses_quality_changes(monkeypatch, name, value):
     monkeypatch.setenv(name, value)

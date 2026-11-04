@@ -29,7 +29,7 @@ def test_timeout_retry_keeps_single_logical_result(tmp_path, monkeypatch, track,
             monkeypatch.setenv('MANDOL_' + key + '_ENDPOINT', urls[channel][0])
         from mandol_competition.multimodal.config import get_config
         get_config.cache_clear()
-        released, paused, completed = threading.Event(), threading.Event(), threading.Event()
+        released, paused, completed, finished = (threading.Event() for _ in range(4))
         try:
             app = getattr(apps, track)()
             obj = app.state.add_service if track == 'multimodal' else app.state.memory_service
@@ -37,26 +37,33 @@ def test_timeout_retry_keeps_single_logical_result(tmp_path, monkeypatch, track,
             original = getattr(obj, name)
             count = []
             def slow(*args, **kwargs):
-                count.append(1)
-                if len(count) == 1 and pause_at == 'before_commit':
-                    paused.set(); assert released.wait(10)
-                result = original(*args, **kwargs)
-                if len(count) == 1 and pause_at == 'after_commit':
-                    paused.set(); assert released.wait(10)
-                completed.set()
-                return result
+                try:
+                    count.append(1)
+                    if len(count) == 1 and pause_at == 'before_commit':
+                        paused.set(); assert released.wait(10)
+                    result = original(*args, **kwargs)
+                    if len(count) == 1 and pause_at == 'after_commit':
+                        paused.set(); assert released.wait(10)
+                    completed.set()
+                    return result
+                finally: finished.set()
             setattr(obj, name, slow)
             with TestClient(app) as client:
                 until = time.monotonic() + 15
                 while client.get('/readyz').status_code != 200:
-                    assert time.monotonic() < until
+                    assert time.monotonic() < until, getattr(obj, '_init_error', 'startup not ready')
                     time.sleep(.05)
                 fixture = json.loads((Path(__file__).parent / 'fixtures' / (track + '.json')).read_text())
                 headers = {'X-Api-Key': 'fixture'}
                 first = client.post('/add', json=fixture['add'], headers=headers)
                 assert first.status_code == 503, first.text
                 assert paused.wait(10)
-                released.set(); assert completed.wait(10)
+                released.set(); assert finished.wait(10)
+                # With an end-to-end budget, work paused before publication
+                # may stop before a new inference dispatch. Its durable ledger
+                # must allow the same request to complete on retry. A committed
+                # write must still finish and replay its original receipt.
+                if pause_at == 'after_commit': assert completed.is_set()
                 replay = client.post('/add', json=fixture['add'], headers=headers)
                 assert replay.status_code == 200 and replay.json()['success'] is True, replay.text
                 assert client.post('/search', json=fixture['search'], headers=headers).json()['data']

@@ -121,7 +121,7 @@ def test_lock_capacity_expiry_and_schema_rejection(tmp_path):
         store.initialize()
 
 
-def test_projection_embedding_failure_preserves_add_and_lexical_search(tmp_path):
+def test_projection_embedding_failure_preserves_add_and_lexical_search(tmp_path,monkeypatch):
     service = CodingMemoryService(settings(tmp_path))
     service.start()
 
@@ -130,6 +130,12 @@ def test_projection_embedding_failure_preserves_add_and_lexical_search(tmp_path)
             raise RuntimeError("embedding unavailable")
 
     service._encoder = BrokenEncoder()
+    # This is a fault-injection unit test, not a Qdrant integration test. Fail
+    # at the projection boundary without connecting to the default live port.
+    from mandol_competition.code import projection
+    def unavailable(*args,**kwargs):
+        raise RuntimeError('embedding unavailable')
+    monkeypatch.setattr(projection,'prepare_channel',unavailable)
     service.add_messages("u", "s", "r", [message()])
     assert service.search("u", "token refresh", 1)
     assert service.stats()["projection_fallbacks"] == 1

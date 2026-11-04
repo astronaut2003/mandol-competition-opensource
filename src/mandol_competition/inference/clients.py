@@ -144,6 +144,13 @@ class HTTPEncoders:
 
 class HTTPJointEncoders(HTTPEncoders):
     """Versioned paired encoding for a provider that returns both channels once."""
+    def embedding_query_policy(self):
+        if (self.dense.recipe.served_alias == 'text-embedding-v4'
+                and self.sparse.recipe.served_alias == 'text-embedding-v4'):
+            from .embedding_query_views import descriptor
+            return descriptor()
+        return None
+
     def _encode(self, texts, *, query):
         if not texts or any(not isinstance(t, str) or not t.strip() for t in texts):
             raise ValueError("nonempty embedding texts required")
@@ -182,4 +189,7 @@ class HTTPJointEncoders(HTTPEncoders):
         return self._encode(texts, query=False)
 
     def encode_query(self, text):
+        if self.embedding_query_policy() is not None:
+            from .embedding_query_views import encode_query_views
+            return encode_query_views(lambda view: self._encode([view], query=True)[0], text)
         return self._encode([text], query=True)[0]

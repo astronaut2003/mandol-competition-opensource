@@ -48,7 +48,7 @@ def test_retry_reuses_correlation_and_is_bounded(status):
     seen = []
     def handler(request):
         seen.append(request.headers["Idempotency-Key"])
-        return httpx.Response(status, json={"private": "must never escape"})
+        return httpx.Response(status, headers={'Retry-After': '0'}, json={"private": "must never escape"})
     client = transport(handler, max_attempts=3)
     with pytest.raises(InferenceUnavailable) as error:
         client.request("POST", "/v1/embeddings", {"input": ["private"]})

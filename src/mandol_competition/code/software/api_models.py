@@ -1,13 +1,15 @@
-"""Audited coding-only chat access through Mandol's existing CloseAI provider.
+"""Audited coding-only chat access through the selected generation transport.
 
 No textual-provider generation/truncation wrapper is called: full tool messages,
 explicit prompt selection and provider usage are needed for paired evaluation.
 """
 
 import logging
+import math
 import os
 import re
 import time
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from .api_context import MaximumSafeBudget, MaximumSafeContext, canonical_json, digest
@@ -16,6 +18,24 @@ from .api_context import MaximumSafeBudget, MaximumSafeContext, canonical_json, 
 MODEL_ALIAS = "gpt-4o-mini-closeai"
 ACTUAL_MODEL = "gpt-4o-mini"
 PROVIDER = "openai-proxy"
+
+
+class _PooledChatFacade:
+    """Keep the actor's SDK-shaped interface over the common audited transport."""
+    def __init__(self, route, key, timeout):
+        from mandol_competition.inference.vlm import HTTPVLMClient
+        self.wire = HTTPVLMClient(route.endpoint, route.model, api_key=key, timeout=timeout)
+        self.chat = self.completions = self
+
+    def create(self, **request):
+        if request.get('model') != self.wire.model:
+            raise ValueError('prepared generation model differs from transport')
+        response = self.wire.complete(request['messages'], request_id=digest(request),
+            **{k: v for k, v in request.items() if k not in {'messages', 'model'}})
+        return SimpleNamespace(model_dump=lambda mode='json': response)
+
+    def close(self):
+        self.wire.close()
 
 
 class CodingAPIError(RuntimeError):
@@ -43,15 +63,19 @@ class CodingAPIClient:
     @classmethod
     def from_env(cls, *, budget=None, timeout=300, retries=2):
         # Read before importing project settings (which may load a .env file).
-        key = os.environ.get("CLOSEAI_API_KEY")
-        if not key:
-            raise CodingAPIError("missing_CLOSEAI_API_KEY_environment", {})
+        from mandol_competition.inference.generation import generation_route
+        route = generation_route('https://api.openai-proxy.org/v1', ACTUAL_MODEL,
+                                 credential_env='CLOSEAI_API_KEY')
+        try:
+            key = route.key()
+        except ValueError:
+            raise CodingAPIError('missing_generation_credential_environment', {}) from None
         for name in ("openai", "httpx", "httpcore"):
             logging.getLogger(name).setLevel(logging.WARNING)
         from mandol.llm.llm_client import LLMClient
         from mandol.llm.configs import API_PROVIDERS
 
-        url = API_PROVIDERS[PROVIDER]["base_url"]
+        url = route.endpoint if route.routed else API_PROVIDERS[PROVIDER]["base_url"]
         parsed = urlsplit(url)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
                 or parsed.query or parsed.fragment or key in url):
@@ -60,12 +84,22 @@ class CodingAPIClient:
         llm = LLMClient(model_name=MODEL_ALIAS, api_key=key, base_url=url,
                         max_context_ratio=budget.max_context_ratio,
                         request_max_retries=0, request_timeout=timeout)
-        return cls(llm, budget=budget, secret=key, retries=retries)
+        if route.routed:
+            close = getattr(llm.client, 'close', None)
+            if close:
+                close()
+            llm.client = _PooledChatFacade(route, key, timeout)
+        instance = cls(llm, budget=budget, secret=key, retries=retries)
+        instance.generation_route = route
+        return instance
 
     def identity(self):
         import importlib.metadata
 
-        return {"model_alias": MODEL_ALIAS, "actual_model": ACTUAL_MODEL, "provider": PROVIDER,
+        route = getattr(self, 'generation_route', None)
+        return {"model_alias": MODEL_ALIAS, "actual_model": ACTUAL_MODEL,
+                "provider": route.provider if route else PROVIDER,
+                "wire_model": route.model if route else ACTUAL_MODEL,
                 **self.budget.record(), "sampling": self.sampling,
                 "request_timeout_seconds": self.llm.request_timeout,
                 "request_retries": self.retries, "provider_base_url": self.llm.base_url,
@@ -81,6 +115,10 @@ class CodingAPIClient:
             request.update(tools=tools, tool_choice="auto", parallel_tool_calls=False)
         if json_format:
             request["response_format"] = {"type": "json_object"}
+        route = getattr(self, 'generation_route', None)
+        if route and route.routed:
+            request = {'model': route.model, 'messages': selected,
+                       **route.options({k: v for k, v in request.items() if k not in {'model', 'messages'}})}
         if self.secret and self.secret in canonical_json(request):
             raise CodingAPIError("credential_in_request_body_rejected", {})
         return request, {**self.identity(), **audit, "request_sha256": digest(request)}
@@ -88,7 +126,7 @@ class CodingAPIClient:
     def complete(self, request, audit):
         # The caller persists this exact request and audit before any API call.
         if (digest(request) != audit["request_sha256"] or request["max_tokens"] != self.budget.max_tokens
-                or request["model"] != ACTUAL_MODEL):
+                or request["model"] != getattr(getattr(self, 'generation_route', None), 'model', ACTUAL_MODEL)):
             raise ValueError("Prepared request changed before transmission")
         attempts = []
         for attempt in range(self.retries + 1):
@@ -97,13 +135,21 @@ class CodingAPIClient:
                 response = self.llm.client.chat.completions.create(**request).model_dump(mode="json")
             except Exception as error:
                 status = getattr(error, "status_code", None)
-                retryable = (status in {408, 409, 425, 429, 500, 502, 503, 504}
-                             or type(error).__name__ in {"APITimeoutError", "APIConnectionError"})
+                retryable = (not getattr(error, 'unknown_outcome', False) and
+                    (status in {408, 409, 425, 429, 500, 502, 503, 504}
+                     or type(error).__name__ in {"APITimeoutError", "APIConnectionError"}))
                 attempts.append({"attempt": attempt, "error_type": type(error).__name__,
                                  "http_status": status if type(status) is int else None,
                                  "seconds": time.perf_counter() - start})
                 if retryable and attempt < self.retries:
-                    time.sleep(2 ** attempt)
+                    delay = 2 ** attempt
+                    retry_after = getattr(error, 'retry_after', None)
+                    if retry_after is not None and (type(retry_after) not in (int, float)
+                            or not math.isfinite(retry_after) or not 0 <= retry_after <= 60):
+                        raise CodingAPIError('provider_request_failed', {'attempts': attempts, 'context': audit}) from None
+                    if retry_after is not None:
+                        delay = max(delay, retry_after)
+                    time.sleep(delay)
                     continue
                 raise CodingAPIError("provider_request_failed", {"attempts": attempts, "context": audit}) from None
             attempts.append({"attempt": attempt, "seconds": time.perf_counter() - start})
@@ -113,7 +159,8 @@ class CodingAPIClient:
                 raise CodingAPIError("credential_echo_response_rejected", {"attempts": attempts})
             usage = response.get("usage") or {}
             record = {"attempts": attempts, "context": audit, "response": response}
-            if not re.fullmatch(r"gpt-4o-mini(?:-\d{4}-\d{2}-\d{2})?", response.get("model") or ""):
+            from mandol_competition.inference.generation import is_mini_response
+            if not is_mini_response(response.get('model')):
                 raise CodingAPIError("unexpected_returned_model", record)
             if (any(type(usage.get(k)) is not int or usage[k] < 0
                     for k in ("prompt_tokens", "completion_tokens", "total_tokens"))

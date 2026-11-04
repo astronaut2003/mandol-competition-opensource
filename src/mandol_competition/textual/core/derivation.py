@@ -324,13 +324,10 @@ class DerivationWorker:
             else:
                 response = self.generate(messages)
                 model = response.get("response_model", "")
+                from mandol_competition.inference.generation import is_mini_response
                 if (
                     response.get("status") != "PASS"
-                    or not isinstance(model, str)
-                    or not (
-                        model == self.recipe.actual_model
-                        or model.startswith(self.recipe.actual_model + "-")
-                    )
+                    or not is_mini_response(model)
                     or response.get("finish_reason") != "stop"
                 ):
                     raise StateUnavailable(

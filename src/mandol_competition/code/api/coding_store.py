@@ -25,6 +25,10 @@ class CapacityExceeded(ValueError):
     pass
 
 
+class PreparationBudgetExceeded(ValueError):
+    """A known service preparation limit, not an unexpected server failure."""
+
+
 class CodingEvidenceStore:
     """Compatibility facade for the source-backed episode adapter.
 
@@ -94,13 +98,20 @@ class CodingEvidenceStore:
             prior = self.state.request(scope, request_id)
             if prior:
                 return self.coordinator.apply(scope, request_id, payload_digest, Mutation(), {})["count"]
-            rows = [m for batch in self.state.iter_memories(scope) for m in batch]
-            if self.max_units_per_user is not None and sum(m.memory_type == "engineering_raw" for m in rows) + len(payload) > self.max_units_per_user:
-                raise CapacityExceeded("User memory capacity exceeded; no messages were added")
+            if len(payload) > self.coordinator.max_mutation_memories:
+                raise PreparationBudgetExceeded("Service request memory budget exceeded")
+            # Capacity and session order need metadata, not every historical
+            # message body. Loading the entire corpus on each small Add caused
+            # growing hydration/JSON overhead for long engineering histories.
+            if self.max_units_per_user is not None:
+                count = self.state._rows("SELECT count(*) AS n FROM memories WHERE scope=? AND memory_type='engineering_raw' AND lifecycle<>'deleted'", (scope.key,))[0]["n"]
+                if count + len(payload) > self.max_units_per_user:
+                    raise CapacityExceeded("User memory capacity exceeded; no messages were added")
             attributes = attributes or {"generation": uuid.uuid4().hex, "created_at": now,
                                         "expires_at": now + self.ttl_seconds, "revision": 0}
             attributes = dict(attributes, revision=attributes["revision"] + 1)
-            sequence = max((m.metadata["sequence"] for m in rows if m.memory_type == "engineering_raw" and m.session_id == session_id), default=-1) + 1
+            last = self.state._rows("SELECT max(json_extract(metadata,'$.sequence')) AS n FROM memories WHERE scope=? AND session_id=? AND memory_type='engineering_raw' AND lifecycle<>'deleted'", (scope.key, session_id))[0]["n"]
+            sequence = (last if last is not None else -1) + 1
             memories = tuple(CanonicalMemory(
                 "engineering_raw:" + digest([user_id, request_id, index]), message["content"],
                 raw_data={"message": message, "text_content": message["content"]},
@@ -112,6 +123,9 @@ class CodingEvidenceStore:
             derived = Mutation()
             if self.experience_builder:
                 try:
+                    # Experimental source-backed derivation still receives its
+                    # complete input. The frozen C0 path has no such builder.
+                    rows = [m for batch in self.state.iter_memories(scope) for m in batch]
                     derived = self.experience_builder.prepare(scope,session_id,request_id,payload_digest,(*rows,*memories))
                 except Exception as exc:
                     self.state.record_event(scope,'derive','experience',type(exc).__name__)

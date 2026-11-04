@@ -8,11 +8,14 @@ import json
 import os
 import re
 import tempfile
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from .base import Entity, Event, Extraction, ExtractionError, Relation, VisualObject, VisionExtractor
+from .output_guard import (MODEL_OUTPUT_LIMIT, validation_receipt_valid, extraction_fingerprint,
+                           verified_ocr_coverage, INCOMPLETE_OCR_POLICY)
 
 
 def cache_key(
@@ -61,6 +64,7 @@ class CachedResult:
     extraction: Extraction
     usage: dict | None
     latency_ms: float | None
+    output_validation: dict | None = None
 
 
 class ExtractionCache:
@@ -110,14 +114,44 @@ class ExtractionCache:
                 Path(temporary).unlink(missing_ok=True)
 
     def get_result(self, media_id: str, key: str) -> CachedResult | None:
-        record = self._read_record(media_id, key)
+        path = self._path_for(media_id, key)
+        try:
+            original_bytes = path.read_bytes()
+        except OSError:
+            original_bytes = None
+        if original_bytes is not None:
+            from ..ocr_cache_retirement import cache_record_retired
+            if cache_record_retired(path, media_id, key, original_bytes):
+                return None
+        try:
+            record = json.loads(original_bytes) if original_bytes is not None else None
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(record, dict) or record.get("media_id") != media_id:
+            return None
         if record is None or not isinstance(record.get("extraction"), dict):
+            return None
+        receipt = record.get('output_validation')
+        if isinstance(receipt, dict) and receipt.get('policy') == INCOMPLETE_OCR_POLICY:
+            return None
+        if receipt is not None and not validation_receipt_valid(receipt):
+            return None
+        if isinstance(receipt, dict) and receipt.get('media_id', media_id) != media_id:
+            return None
+        usage = record.get('usage')
+        completion = usage.get('completion_tokens') if isinstance(usage, dict) else None
+        if type(completion) is int and completion >= MODEL_OUTPUT_LIMIT:
             return None
         try:
             extraction = _from_payload(record["extraction"])
         except (TypeError, ValueError, KeyError):
             return None
-        return CachedResult(extraction, record.get("usage"), record.get("latency_ms"))
+        try:
+            if isinstance(receipt, dict) and 'extraction_sha256' in receipt and receipt['extraction_sha256'] != extraction_fingerprint(extraction):
+                return None
+        except (TypeError, ValueError):
+            return None
+        return CachedResult(extraction, record.get("usage"), record.get("latency_ms"), deepcopy(receipt))
 
     def get(self, media_id: str, key: str) -> Extraction | None:
         result = self.get_result(media_id, key)
@@ -126,11 +160,28 @@ class ExtractionCache:
     def put(
         self, media_id: str, key: str, extraction: Extraction,
         *, usage: dict | None = None, latency_ms: float | None = None,
+        output_validation: dict | None = None,
     ) -> None:
-        self._write_record(media_id, key, {
+        if isinstance(output_validation, dict) and output_validation.get('policy') == INCOMPLETE_OCR_POLICY:
+            raise ExtractionError('incomplete OCR belongs only to its request ledger, never the success cache')
+        if output_validation is not None and not validation_receipt_valid(output_validation):
+            raise ExtractionError('unverified output cannot enter the extraction cache')
+        if isinstance(output_validation, dict) and 'ocr_coverage' in output_validation:
+            if verified_ocr_coverage(output_validation, extraction, media_id=media_id,
+                    context_sha256=output_validation.get('context_sha256'),
+                    image_position=output_validation.get('image_position'),
+                    image_count=output_validation.get('image_count')) is None:
+                raise ExtractionError('unbound or inconsistent OCR coverage cannot enter the extraction cache')
+        completion = usage.get('completion_tokens') if isinstance(usage, dict) else None
+        if type(completion) is int and completion >= MODEL_OUTPUT_LIMIT:
+            raise ExtractionError('output at the model limit cannot enter the extraction cache')
+        record = {
             "media_id": media_id, "extraction": asdict(extraction),
             "usage": usage, "latency_ms": latency_ms,
-        })
+        }
+        if output_validation is not None:
+            record['output_validation'] = dict(output_validation)
+        self._write_record(media_id, key, record)
 
     def delete_for_media(self, media_id: str) -> int:
         shard = self._shard(media_id)
@@ -158,6 +209,7 @@ class CachingExtractor:
         self, inner: VisionExtractor, cache: ExtractionCache, *, model: str,
         prompt_version: str, schema_version: str,
         provider_identity: str = "",
+        require_evidence: bool = False,
     ) -> None:
         self._inner = inner
         self._cache = cache
@@ -165,6 +217,7 @@ class CachingExtractor:
         self._prompt_version = prompt_version
         self._schema_version = schema_version
         self._provider_identity = provider_identity
+        self.require_evidence = require_evidence
         self.hits = 0
         self.misses = 0
 
@@ -174,6 +227,65 @@ class CachingExtractor:
 
     def cache_size(self) -> int:
         return len(self._cache)
+
+    @property
+    def supports_resumable_ocr(self):
+        return bool(getattr(self._inner, 'supports_resumable_ocr', False))
+
+    def get_cached_result(self, *, image_data_uri, context_text, image_position, image_count):
+        media_id = _media_id(image_data_uri)
+        key = self._key(media_id, context_text, image_position, image_count)
+        reader = getattr(self._cache, 'get_result', None)
+        if callable(reader):
+            result = reader(media_id, key)
+        else:
+            extraction = self._cache.get(media_id, key)
+            result = CachedResult(extraction, None, None) if extraction is not None else None
+        if result is None:
+            return None
+        receipt = getattr(result, 'output_validation', None)
+        if isinstance(receipt, dict) and receipt.get('policy') == INCOMPLETE_OCR_POLICY:
+            return None
+        if isinstance(receipt, dict):
+            identities = dict(media_id=media_id, context_sha256=context_digest(context_text),
+                image_position=image_position, image_count=image_count)
+            if any(k in receipt and (receipt[k] != v or k in {'image_position', 'image_count'}
+                    and type(receipt[k]) is not int) for k, v in identities.items()):
+                return None
+            if 'ocr_coverage' in receipt and verified_ocr_coverage(receipt, result.extraction, **identities) is None:
+                return None
+        return result
+
+    def extract_resumable(self, *, resume=None, checkpoint=None, binding=None, legacy=False,
+                          image_data_uri, context_text, image_position, image_count):
+        if not self.supports_resumable_ocr:
+            return self.extract(image_data_uri=image_data_uri, context_text=context_text,
+                image_position=image_position, image_count=image_count)
+        from .base import has_visual_evidence, ExtractionError
+        media_id = _media_id(image_data_uri)
+        key = self._key(media_id, context_text, image_position, image_count)
+        record = self.get_cached_result(image_data_uri=image_data_uri, context_text=context_text,
+            image_position=image_position, image_count=image_count)
+        cached = record.extraction if record is not None else None
+        if cached is not None and (not self.require_evidence or has_visual_evidence(cached)):
+            self.hits += 1
+            return cached
+        self.misses += 1
+        extraction = self._inner.extract_resumable(resume=resume, checkpoint=checkpoint,
+            binding=binding, legacy=legacy, image_data_uri=image_data_uri,
+            context_text=context_text, image_position=image_position, image_count=image_count)
+        if self.require_evidence and not has_visual_evidence(extraction):
+            raise ExtractionError('model returned no observable visual evidence')
+        observations = self._inner.take_observations()
+        receipts = self._inner.take_output_receipts()
+        usage, latency = (observations[-1][1], observations[-1][2]) if observations else (None, None)
+        # Only the fully verified result reaches the success cache. Scene and
+        # partial crop checkpoints live solely in the request preparation ledger.
+        receipt = receipts[-1] if receipts else None
+        if not isinstance(receipt, dict) or receipt.get('policy') != INCOMPLETE_OCR_POLICY:
+            self._cache.put(media_id, key, extraction, usage=usage, latency_ms=latency,
+                output_validation=receipt)
+        return extraction
 
     def _key(self, media_id: str, context_text: str, image_position: int, image_count: int) -> str:
         context = "\x00".join((context_digest(context_text), str(image_position), str(image_count)))
@@ -201,8 +313,11 @@ class CachingExtractor:
     ) -> Extraction:
         media_id = _media_id(image_data_uri)
         key = self._key(media_id, context_text, image_position, image_count)
-        cached = self._cache.get(media_id, key)
-        if cached is not None:
+        record = self.get_cached_result(image_data_uri=image_data_uri, context_text=context_text,
+            image_position=image_position, image_count=image_count)
+        cached = record.extraction if record is not None else None
+        from .base import has_visual_evidence, ExtractionError
+        if cached is not None and (not self.require_evidence or has_visual_evidence(cached)):
             self.hits += 1
             return cached
         self.misses += 1
@@ -210,7 +325,11 @@ class CachingExtractor:
             image_data_uri=image_data_uri, context_text=context_text,
             image_position=image_position, image_count=image_count,
         )
+        if self.require_evidence and not has_visual_evidence(extraction):
+            raise ExtractionError("model returned no observable visual evidence")
         observations = self._inner.take_observations() if hasattr(self._inner, "take_observations") else []
         usage, latency = (observations[-1][1], observations[-1][2]) if observations else (None, None)
-        self._cache.put(media_id, key, extraction, usage=usage, latency_ms=latency)
+        receipts = self._inner.take_output_receipts() if hasattr(self._inner, 'take_output_receipts') else []
+        self._cache.put(media_id, key, extraction, usage=usage, latency_ms=latency,
+                        output_validation=receipts[-1] if receipts else None)
         return extraction

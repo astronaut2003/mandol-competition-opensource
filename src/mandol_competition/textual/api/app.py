@@ -8,8 +8,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 
 from .competition import CompetitionMemoryService
 from .config import Settings
@@ -19,6 +17,11 @@ from .retention import RetentionJanitor
 from .schemas import AddRequest, AddResponse, SearchRequest, SearchResponse
 from .security import require_auth
 from .version import __version__
+from mandol_competition.runtime.http_boundary import install_http_boundary, ErrorRule
+from ..core.rerank_query_views import RerankQueryLimitError
+from mandol_competition.runtime.contract import SearchPlan,acknowledge_add,EXECUTION_TOP_K_LIMIT
+from mandol_competition.runtime.deadline import add_work_key
+from mandol_competition.observability.diagnostics import diagnostic_call
 
 logger = logging.getLogger("mandol_competition.textual.api.app")
 
@@ -124,24 +127,16 @@ def create_app(settings: Settings | None = None, *, memory_service=None) -> Fast
             raise _not_ready()
 
         def perform_add():
-            return memory.add_messages(
+            return diagnostic_call('add', memory.add_messages,
                 user_id=payload.user_id,
                 session_id=payload.session_id,
                 request_id=payload.request_id,
                 messages=[m.model_dump() for m in payload.messages],
             )
 
-        if deadlines is not None:
-            deadlines.run(perform_add, seconds=cfg.add_timeout_seconds)
-        else:
-            perform_add()
-        # Echo the exact identifiers received (contract requirement).
-        return AddResponse(
-            success=True,
-            request_id=payload.request_id,
-            user_id=payload.user_id,
-            session_id=payload.session_id,
-        )
+        count=deadlines.run(perform_add,seconds=cfg.add_timeout_seconds,
+                            key=add_work_key('textual', payload))
+        return diagnostic_call('add_receipt',acknowledge_add,payload,count,AddResponse)
 
     @app.post(
         cfg.search_path, response_model=SearchResponse, response_model_exclude_none=True
@@ -152,72 +147,16 @@ def create_app(settings: Settings | None = None, *, memory_service=None) -> Fast
             raise _rate_limited()
         if not ready_event_holder["ready"] or not memory.ready:
             raise _not_ready()
+        plan=SearchPlan(payload.top_k,EXECUTION_TOP_K_LIMIT)
 
         def perform_search():
-            candidate = getattr(cfg, "quality_candidate", None)
-            extra = {"choices": payload.options} if candidate and candidate.get("query_input_policy") else {}
-            return memory.search(
-                user_id=payload.user_id, query=payload.query, top_k=payload.top_k, **extra
+            return diagnostic_call('search', memory.search,
+                user_id=payload.user_id,query=payload.query,top_k=plan.execution_top_k,choices=payload.options,
             )
 
-        hits = (
-            deadlines.run(perform_search, seconds=cfg.search_timeout_seconds)
-            if deadlines is not None
-            else perform_search()
-        )
-        data = [
-            {
-                "id": hit["id"],
-                "content": hit["content"],
-                "score": hit["score"],
-                "created_at": hit.get("created_at"),
-            }
-            for hit in hits
-        ]
-        return SearchResponse(data=data)
+        hits=deadlines.run(perform_search,seconds=cfg.search_timeout_seconds)
+        return diagnostic_call('response',plan.response,hits,SearchResponse)
 
-    @app.exception_handler(RequestValidationError)
-    async def malformed_request(request, exc):
-        return JSONResponse(
-            status_code=422, content={"detail": {"reason": "malformed request"}}
-        )
-
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        logger.error("unhandled %s on %s", type(exc).__name__, request.method)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": {"reason": "internal server error"}},
-        )
-
-    from mandol_substrate.state import Conflict, StateUnavailable
-
-    @app.exception_handler(StateUnavailable)
-    async def competition_unavailable(request: Request, exc: StateUnavailable):
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": {
-                    "reason": "dependency unavailable; completion may be unknown"
-                }
-            },
-        )
-
-    @app.exception_handler(Conflict)
-    async def competition_conflict(request: Request, exc: Conflict):
-        return JSONResponse(
-            status_code=409,
-            content={"detail": {"reason": "request identity or version conflict"}},
-        )
-
-    @app.exception_handler(ValueError)
-    async def competition_invalid_request(request: Request, exc: ValueError):
-        return JSONResponse(
-            status_code=422, content={"detail": {"reason": "invalid request"}}
-        )
-
-    from mandol_competition.observability.runtime import install_observability
-    install_observability(app, "textual", ready=health, state=lambda: getattr(memory, "state", None))
+    install_http_boundary(app,'textual',ready=health,state=lambda:getattr(memory,'state',None),
+        rules=(ErrorRule(RerankQueryLimitError,413,'query exceeds bounded lossless reranking capacity'),))
     return app

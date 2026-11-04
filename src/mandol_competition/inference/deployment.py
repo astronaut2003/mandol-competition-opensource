@@ -2,10 +2,23 @@
 import hashlib
 import json
 import os
+import tomllib
 from pathlib import Path
 
 
 def bindings():
+    config = os.getenv('MANDOL_CONFIG')
+    runtime = tomllib.loads(Path(config).read_text()).get('runtime', {}) if config else {}
+    mode = runtime.get('mode')
+    if mode in ('local', 'cluster'):
+        from mandol_competition.config.topology import validate_bindings
+        path = os.getenv('MANDOL_' + mode.upper() + '_INFERENCE_BINDINGS')
+        if path:
+            value = json.loads(Path(path).read_text())
+            if value.get('format') != 'mandol-serving-bindings-v1':
+                raise ValueError('unsupported serving identity manifest')
+            return validate_bindings(value['models'])
+        return validate_bindings(runtime.get('bindings'))
     path = os.getenv('MANDOL_INFERENCE_BINDINGS')
     if not path:
         return {}

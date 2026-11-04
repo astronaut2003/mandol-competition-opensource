@@ -1,6 +1,6 @@
 # Contributing
 
-Follow the [Quick Start](README.md#quick-start) and
+Follow the [Quick Start](README.md#installation) and
 [test guide](docs/Reproduction.md). Use the locked Python 3.12 environment and
 disposable storage for integration tests.
 

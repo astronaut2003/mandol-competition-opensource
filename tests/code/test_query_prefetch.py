@@ -8,6 +8,8 @@ import pytest
 from mandol_competition.code.api.coding_memory import CodingMemoryService
 from mandol_competition.code.api.remote_embeddings import RecipeDenseEncoder, prepared_dense_query
 from mandol_substrate.state import ProfileMismatch
+from mandol_substrate.state import Scope
+from mandol_substrate.gates import ScopeGates
 
 
 class Encoder(RecipeDenseEncoder):
@@ -49,7 +51,11 @@ def test_two_named_v4_requests_overlap_http_and_keep_context_and_search_state_se
     service.settings = SimpleNamespace(inference_contract='aml-official-eligible-v1')
     service.quality_candidate = None
     service._encoder, service._lock = encoder, threading.RLock()
-    service.store = SimpleNamespace(snapshot=lambda user: ('complete-v1', []))
+    service._ready = True
+    service._searches, service._lifecycle = ScopeGates(), ScopeGates()
+    service._lifecycle_scope = Scope('code-service-lifecycle', 'instance')
+    service.store = SimpleNamespace(snapshot=lambda user: ('complete-v1', []),
+                                    scope=lambda user: Scope('fixture', user))
     service._cache = {('user', 'complete-v1'): (SimpleNamespace(raw_channel=object()), {})}
     # A deadlock here would prove query I/O still holds the global search lock.
     service._search = lambda user, query, top_k: encoder.encode_query(query)

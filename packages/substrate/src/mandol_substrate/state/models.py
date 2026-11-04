@@ -12,6 +12,19 @@ class StateUnavailable(RuntimeError):
     """A scope cannot safely serve; the API must report 503, never empty hits."""
 
 
+class DependencyUnavailable(StateUnavailable):
+    """Dependency transport owns retries; storage reconciliation must not repeat it.
+
+    Adapters can mark a retry signal that optional projections must propagate.
+    This contract carries no HTTP implementation or application dependency.
+    """
+    propagate_retry_signal = False
+
+
+class ScopeBusy(StateUnavailable):
+    """A fair scope lease timed out before any protected work began."""
+
+
 class ProfileMismatch(StateUnavailable):
     pass
 

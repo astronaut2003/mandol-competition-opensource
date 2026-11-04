@@ -26,9 +26,6 @@ def fake_inference(channel):
             self.send_response(status); self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
         def do_GET(self):
-            # HTTPTransport sends a small JSON body even for GET. Consume it
-            # before the next keep-alive request, as a real HTTP server does.
-            self.rfile.read(int(self.headers.get('Content-Length', '0')))
             if self.path == '/health': return self.respond(200, {'status': 'ok'})
             if self.path == '/version': return self.respond(200, {'version': '0.29.0'})
             if self.path == '/v1/recipe': return self.respond(200, {'recipes': [{'recipe': asdict(r), 'hash': r.hash} for r in recipe_set]})
@@ -57,7 +54,7 @@ def fake_inference(channel):
             if self.path == '/classify':
                 return self.respond(200, {'model': alias, 'data': [{'index': i, 'num_classes': 2, 'probs': [.2, .8]} for i, _ in enumerate(body['input'])]})
             if self.path in ('/chat/completions', '/v1/chat/completions'):
-                return self.respond(200, {'model': alias, 'choices': [{'message': {'content': json.dumps({'description': 'red backpack', 'entities': [], 'objects': [], 'ocr_text': '', 'events': [], 'relations': [], 'tags': [], 'location_hint': ''})}}]})
+                return self.respond(200, {'model': alias, 'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps({'description': 'red backpack', 'entities': [], 'objects': [], 'ocr_text': '', 'events': [], 'relations': [], 'tags': [], 'location_hint': ''})}}]})
             self.respond(404, {})
         def log_message(self, *_): pass
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)

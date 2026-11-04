@@ -68,7 +68,7 @@ def sdk_client(content, *, usage=None, error=None, captured=None):
         if error is not None:
             raise error
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=content))],
             usage=usage,
         )
 
@@ -97,6 +97,7 @@ def test_client_sends_ordered_vision_blocks_and_parses_usage():
 
     assert captured == {
         "model": "vision-model", "temperature": 0.0,
+        'max_completion_tokens': 1024, 'response_format': {'type': 'json_object'},
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": "describe"},
             {"type": "image_url", "image_url": {"url": IMAGE}},
@@ -149,10 +150,9 @@ def test_actual_sdk_serializes_to_configured_endpoint_without_network():
     'Sure. {"description": "fenced"} Done.',
     'Here: {"description": "nested } brace", "objects": [{"name": "bag"}]} end',
 ])
-def test_client_accepts_json_surrounded_by_markdown_or_prose(content):
-    assert sdk_client(content).complete(prompt="p", image_data_uri=IMAGE).payload["description"] in {
-        "fenced", "nested } brace",
-    }
+def test_json_mode_requires_one_complete_object_without_salvaging_prose(content):
+    with pytest.raises(ExtractionError):
+        sdk_client(content).complete(prompt="p", image_data_uri=IMAGE)
 
 
 @pytest.mark.parametrize("content", [None, "no JSON", '{"description": ', '[{"description": "x"}]'])
@@ -284,8 +284,10 @@ def test_extractor_honors_provider_retry_after_and_refuses_unbounded_wait(monkey
     assert extract(OpenAICompatExtractor(model_name='vision-model', config=CONFIG, client=client)).description == 'ok'
     assert waits == [5.]
     for delay in (61., float('inf')):
+        from mandol_competition.inference.errors import InferenceRateLimited
         client = StubClient([VisionRequestError('busy', retryable=True, status_code=429, retry_after=delay)])
-        with pytest.raises(ExtractionError):
+        with pytest.raises(InferenceRateLimited) as rejected:
             extract(OpenAICompatExtractor(model_name='vision-model', config=CONFIG, client=client))
+        assert rejected.value.status_code==429
         assert len(client.calls) == 1
     assert waits == [5.]

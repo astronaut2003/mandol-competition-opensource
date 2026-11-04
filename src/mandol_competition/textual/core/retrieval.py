@@ -9,6 +9,7 @@ from mandol_substrate.retrieval.results import RETRIEVAL_METHOD_MAPPING, Retriev
 from mandol_substrate.retrieval.results import MultiRetrievalResults
 from mandol_substrate.retrieval.fusion import ScoreFusion
 from mandol_substrate.state.models import StateUnavailable
+from mandol_competition.observability.diagnostics import diagnostic_call
 
 
 def fuse_legs(legs, units, profile, *, top_k, query_vector=None, vectors=None):
@@ -105,11 +106,11 @@ class CompetitionRetriever:
                 "candidate_uids": candidate_uids,
             }
             if method == "cosine":
-                legs[method] = self.projection.search_dense(scope, dense, **filters)
+                legs[method] = diagnostic_call('qdrant_dense', self.projection.search_dense, scope, dense, **filters)
             elif method == "bm25":
-                legs[method] = self.state.lexical.search(scope, query, **filters)
+                legs[method] = diagnostic_call('bm25', self.state.lexical.search, scope, query, **filters)
             elif method == "splade":
-                legs[method] = self.projection.search_splade(scope, sparse, **filters)
+                legs[method] = diagnostic_call('qdrant_sparse', self.projection.search_splade, scope, sparse, **filters)
             else:
                 raise StateUnavailable("unknown required retrieval leg")
         uids = list(
@@ -117,7 +118,7 @@ class CompetitionRetriever:
         )
         if len(uids) > 30000:
             raise StateUnavailable("hybrid candidates exceed bounded budget")
-        canonical = self.state.get_memories(scope, uids)
+        canonical = diagnostic_call('candidate_hydration', self.state.get_memories, scope, uids)
         if len(canonical) != len(uids):
             raise StateUnavailable("canonical hydration missing candidate")
         for m in canonical.values():
@@ -146,7 +147,7 @@ class CompetitionRetriever:
             if options.get("mmr", False)
             else None
         )
-        fused = fuse_legs(
+        fused = diagnostic_call('candidate_fusion', fuse_legs,
             legs, units, self.query_profile,
             top_k=top_k, query_vector=dense, vectors=vectors,
         )

@@ -1,7 +1,7 @@
-"""V3 extraction recipe with structural validation.
+"""Fresh V3 qualification recipe; historical recipes and formal defaults unchanged.
 
 One extraction call separates discourse, modality and occurrence support. These
-structural checks do not prove semantic entailment, which needs separate evaluation.
+structural checks do not prove semantic entailment; that remains an audit gate.
 """
 
 from dataclasses import dataclass

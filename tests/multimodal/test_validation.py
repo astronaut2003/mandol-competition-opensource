@@ -91,6 +91,16 @@ def test_rejects_pixel_bomb_before_loading():
         decode_data_uri(uri(image_bytes(size=(100, 100))), MultimodalConfig(max_pixels=100))
 
 
+def test_pillow_bomb_guard_is_a_payload_error_before_pixel_decode(monkeypatch):
+    # A tiny, valid image and a deliberately small Pillow guard exercise its
+    # real open-time exception without allocating a decompression-bomb image.
+    data = image_bytes(size=(20, 20))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+    with pytest.raises(PayloadError) as error:
+        decode_data_uri(uri(data), MultimodalConfig())
+    assert error.value.status_code == 422
+
+
 def test_exif_timestamp_survives_and_missing_gps_is_none():
     buffer = io.BytesIO()
     exif = Image.Exif()

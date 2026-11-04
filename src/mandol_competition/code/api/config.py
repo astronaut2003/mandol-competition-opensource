@@ -1,10 +1,9 @@
 """Runtime configuration for the AML adapter.
 
-All settings are read from environment variables prefixed with ``AML_`` so the
-adapter can be tuned without touching Mandol code. The default path is fully
-local: Mandol's dense graph retrieval works as soon as the embedding model is
-available; no provider LLM key is required unless the optional high-level
-memory feature is enabled.
+The unified factory supplies per-track storage and HTTP inference settings.
+Legacy AML overrides remain available for explicit development configurations.
+The optional HTTP reranker reads credentials from the environment or a secret
+mount; API processes never load a model.
 """
 
 from __future__ import annotations
@@ -132,6 +131,11 @@ class Settings:
     coding_dense_model: str = "qwen3-embedding-0.6b"
     coding_dense_timeout_seconds: float = 10.0
     inference_contract: str = "vllm-http-v1"
+    coding_raw_policy: str = "c0-original-v1"
+    coding_reranker_backend: str = "profile"
+    coding_reranker_endpoint: str = "https://cn-beijing.maas.qianwenaiapi.com/api/v1/services/rerank/text-rerank/text-rerank"
+    coding_reranker_credential_env: str = "DASHSCOPE_API_KEY"
+    coding_reranker_timeout_seconds: float = 15.0
     coding_device: str = "cpu"
 
     log_level: str = "INFO"
@@ -193,6 +197,11 @@ class Settings:
             coding_dense_model=os.getenv("AML_CODING_DENSE_MODEL", "qwen3-embedding-0.6b"),
             coding_dense_timeout_seconds=float(os.getenv("AML_CODING_DENSE_TIMEOUT_SECONDS", "10")),
             inference_contract=os.getenv("MANDOL_CODE_INFERENCE_CONTRACT", "vllm-http-v1"),
+            coding_raw_policy=os.getenv("MANDOL_CODE_RETRIEVAL_POLICY", "c0-original-v1"),
+            coding_reranker_backend=os.getenv("MANDOL_CODE_RERANKER_BACKEND", "profile"),
+            coding_reranker_endpoint=os.getenv("MANDOL_CODE_RERANKER_ENDPOINT", cls.coding_reranker_endpoint),
+            coding_reranker_credential_env=os.getenv("MANDOL_CODE_RERANKER_CREDENTIAL_ENV", "DASHSCOPE_API_KEY"),
+            coding_reranker_timeout_seconds=_get_float("AML_CODING_RERANKER_TIMEOUT_SECONDS", 15.0),
             coding_device=os.getenv("AML_CODING_DEVICE", "cpu"),
             log_level=(os.getenv("AML_LOG_LEVEL", "INFO") or "INFO").upper(),
         )

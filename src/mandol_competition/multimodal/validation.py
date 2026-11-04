@@ -124,7 +124,7 @@ def _validate_image_bytes(data: bytes, declared: str, config: MultimodalConfig) 
             exif = _extract_exif(image)
     except PayloadError:
         raise
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError) as exc:
         raise PayloadError(f"payload is not a decodable image: {exc}") from exc
     return DecodedImage(data, actual, width, height, exif)
 

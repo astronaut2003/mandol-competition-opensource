@@ -61,23 +61,44 @@ class QdrantDenseChannel:
 
 
 def connect_projection(service):
+    # Only construction/publication of the shared HTTP backend is global.
+    # Per-user projection I/O happens after this short critical section.
+    with service._lock:
+        return _connect_projection(service)
+
+
+def _connect_projection(service):
     store = service.store
     if service._vector is None:
         identity = store.state.identity
-        service._vector = QdrantProjectionBackend(service.settings.qdrant_endpoint, store.profile,
+        from .native_sparse import POLICY as NATIVE_POLICY, NativeProjection
+        native = service.settings.coding_raw_policy == NATIVE_POLICY
+        factory = NativeProjection if native else QdrantProjectionBackend
+        service._vector = factory(service.settings.qdrant_endpoint, store.profile,
             state=store.state, storage_id=store.state.db_uuid, identity=identity,
             collection_name=identity.collection, policy=POLICY, optional_projection=True,
             api_key=service.settings.qdrant_api_key)
         store.coordinator.projection = service._vector
         store.coordinator.codec = service._vector.codec
         if service._encoder is not None:
-            store.coordinator.encoders = DenseEncoders(service._encoder)
+            store.coordinator.encoders = service._encoder if native else DenseEncoders(service._encoder)
     return service._vector
 
 
 def prepare_channel(service, user_id, sources):
     store, scope = service.store, service.store.scope(user_id)
     connect_projection(service)
+    from .native_sparse import POLICY as NATIVE_POLICY, FRONTIER, NativeChannel
+    if service.settings.coding_raw_policy == NATIVE_POLICY:
+        service._vector.ensure_schema(scope, create=True)
+        # An old-source rollback may have GC'd the extension generation. Its
+        # frontier alone cannot prove that all current physical rows still exist.
+        actual = service._vector.get_projection_metadata(scope, sorted(sources))
+        if not store.state.projection_ready(scope, FRONTIER) or set(actual) != set(sources):
+            service._vector.gc_scope(scope)
+            if not store.coordinator.project_optional(scope, channel=FRONTIER):
+                raise StateUnavailable("optional native Dense/Sparse projection unavailable")
+        return NativeChannel(store, scope, service._encoder, service._vector, sources)
     if not store.state.projection_ready(scope, "dense"):
         # Remove stale/orphan revisions left by completed canonical erasure.
         service._vector.ensure_schema(scope, create=True)

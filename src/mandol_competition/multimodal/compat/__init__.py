@@ -1,1 +1,1 @@
-"""Legacy readers and experimental graph adapters outside frozen API startup."""
+"""Explicit legacy readers and experimental graph adapters; never production startup."""

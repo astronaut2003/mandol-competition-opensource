@@ -32,6 +32,26 @@ def image_part(color="red"):
     return {"type": "image_url", "image_url": {"url": image_uri(color)}}
 
 
+@pytest.mark.parametrize("operation", ["add", "search"])
+def test_pillow_guard_rejects_http_payload_without_inference_or_publication(backend, monkeypatch, operation):
+    # Exercise the real API/SQLite/Qdrant boundary with deterministic inference.
+    # Shrinking Pillow's own limit avoids constructing a huge hostile image.
+    bad_image = image_part()
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1)
+    class NoVision:
+        def extract(self, **kwargs):
+            pytest.fail("invalid pixels must not reach VLM")
+    app = create_app(backend.config, extractor=NoVision(), backend=backend)
+    body = (request(content=[bad_image]).model_dump() if operation == "add" else
+            {"user_id": "alice", "query": [bad_image], "top_k": 100})
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post("/" + operation, json=body)
+        assert response.status_code == 422
+        assert backend.state.pending_count() == 0
+        assert backend.state._rows("SELECT count(*) AS n FROM memories")[0]["n"] == 0
+        assert backend.encoders.documents == backend.encoders.queries == 0
+
+
 def test_restart_without_document_embeddings_and_idempotency(backend):
     add, search = services(backend)
     expected = add.handle(request())
@@ -407,6 +427,15 @@ def test_default_app_uses_shared_backend_and_http_frozen_models(tmp_path, qdrant
     from mandol_competition.inference.http import HTTPTransport
     monkeypatch.setattr(HTTPTransport, "health", lambda self: True)
     monkeypatch.setattr(RecipeClient, "validate_profile", lambda self: True)  # transport attestation tested separately
+    from mandol_competition.inference.clients import HTTPRerankerClient
+    from mandol_competition.inference.replicas import ReplicaReranker
+    warmed = []
+    def score(self, query, documents):
+        warmed.append(len(documents))
+        return [.5] * len(documents)
+    # Single endpoints now require the same finite warmup as production pools.
+    # This existing mock unit must provide that dependency, not disable warmup.
+    monkeypatch.setattr(HTTPRerankerClient, 'rerank', score)
     from mandol_competition.multimodal.vlm.fake import FakeVisionExtractor
 
     frozen = tmp_path / "profile.json"
@@ -416,9 +445,16 @@ def test_default_app_uses_shared_backend_and_http_frozen_models(tmp_path, qdrant
     config = MultimodalConfig(data_dir=tmp_path, retrieval_profile_path=frozen,
         qdrant_url=qdrant_server.uri, qdrant_collection="bootstrap_" + uuid.uuid4().hex,
         env="production", auth_token="test", vlm_backend="openai_compat")
+    # This factory bypasses backend_support.runtime, so register its exact
+    # test-owned collection for the session fixture's scoped cleanup as well.
+    from .backend_support import OWNED_COLLECTIONS
+    OWNED_COLLECTIONS.add((qdrant_server.uri, config.qdrant_collection))
     app = create_app(config, extractor=FakeVisionExtractor({}, model="fixture", prompt_version="v1", schema_version="1"))
     with TestClient(app) as client:
         assert client.get("/health").json() == {"status": "ok"}
         assert isinstance(app.state.backend.encoders, HTTPEncoders)
+        assert isinstance(app.state.backend.reranker, ReplicaReranker)
+        assert app.state.backend.reranker.snapshot()['configured_replicas'] == 1
+        assert warmed == [1]
         assert not {"torch", "transformers", "sentence_transformers"} & sys.modules.keys()
         assert not (tmp_path / "canonical.sqlite3").exists()

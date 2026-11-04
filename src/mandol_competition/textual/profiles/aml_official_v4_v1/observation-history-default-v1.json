@@ -1,0 +1,14 @@
+{
+  "baseline_quality_sha256": "fdc4bb47fcab086346e2f91c9adf3c48f8e3618ae78d7e88e7ec181995802c66",
+  "observation_order_policy": {
+    "max_added_chars": 2000,
+    "renderer_sha256": "038c0a5521d03f33d52d7bcf7fcd54ada5fc9de4bbfa5fcb529546cf9ba75c15",
+    "version": "textual-observation-history-order-v1"
+  },
+  "overrides": {
+    "returns": {}
+  },
+  "profile_id": "textual-t0-observation-history-v1",
+  "schema": "mandol-textual-quality-candidate-v5",
+  "storage_profile_hash": "45311ac7fc6505ad2837bf02f86a5e706b4246a27c5de9695bb92e2abbc69f9e"
+}

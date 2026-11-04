@@ -14,7 +14,7 @@ from typing import Protocol
 
 from .gates import ScopeGates
 from .contracts import PublicationPolicy
-from .state.models import Conflict, ProfileMismatch, StateUnavailable, digest
+from .state.models import Conflict, DependencyUnavailable, ProfileMismatch, StateUnavailable, digest
 from .vector.interface import PublicationProjection as Projection
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,8 @@ class PublicationCoordinator:
             self.encode_before_prepare = policy.encode_before_prepare
             state.bind_manifest("publication_policy", asdict(policy))
 
-    def apply(self, scope, request_id, payload_digest, mutation, result, *, scope_attributes=None):
+    def apply(self, scope, request_id, payload_digest, mutation, result, *, scope_attributes=None,
+              expected_publication=None, before_prepare=None):
         with self.gates.lease(scope, write=True):
             self.state.ensure_scope(scope)
             self.state.assert_not_purging(scope)
@@ -126,8 +127,16 @@ class PublicationCoordinator:
                     prepared[memory.logical_uid] = (dense, sparse)
                 self._checkpoint(scope, request_id, payload_digest, checkpoint, batch, prepared)
             self.fault("before_T1")
+            # Maintenance candidates can persist a verified preimage while the
+            # same publication write lease excludes Search and other writers.
+            # The CAS itself is checked again inside the T1 SQLite transaction.
+            if before_prepare is not None:
+                before_prepare()
+            guards = ({"expected_publication": expected_publication}
+                      if expected_publication is not None else {})
             request = self.state.prepare(
-                scope, request_id, payload_digest, mutation, result, scope_attributes=scope_attributes
+                scope, request_id, payload_digest, mutation, result,
+                scope_attributes=scope_attributes, **guards
             )
             self.fault("after_T1")
             self._complete(scope, request["mutation_seq"], prepared)
@@ -246,6 +255,11 @@ class PublicationCoordinator:
                 ) and not deleted.intersection(actual):
                     return
                 last_error = "projection verification mismatch"
+            except DependencyUnavailable:
+                # No projection write was attempted for this failed encoding.
+                # The transport already applied its retry/cooldown policy.
+                # Keep T1/outbox/checkpoints pending and preserve the signal.
+                raise
             except Conflict as exc:
                 self.state.record_attempt(scope, seq, str(exc))
                 raise StateUnavailable(str(exc)) from exc
@@ -264,6 +278,8 @@ class PublicationCoordinator:
                 for uid, row in expected.items()
             ) and not deleted.intersection(actual):
                 return
+        except DependencyUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001 -- never turn failed verification into success
             last_error = f"{type(exc).__name__}: final projection verification failed"
         self.state.record_attempt(scope, seq, last_error)
@@ -329,6 +345,11 @@ class PublicationCoordinator:
             except ProfileMismatch:
                 # A wrong resource/recipe binding is never an availability fallback.
                 raise
+            except DependencyUnavailable as exc:
+                self.state.mark_projection_degraded(scope, channel, type(exc).__name__)
+                if exc.propagate_retry_signal:
+                    raise
+                return False  # Preserve the original optional-outage fallback.
             except Exception as exc:
                 self.state.mark_projection_degraded(scope, channel, type(exc).__name__)
                 return False

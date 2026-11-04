@@ -1,7 +1,7 @@
 """Transient builder view. SQLite remains the only semantic persistence.
 
 The frozen builder mutates this disposable representation; its output is an
-ordinary PreparedMutation for canonical storage.
+ordinary PreparedMutation. No embeddings, FAISS, pickle, or private database.
 """
 from copy import deepcopy
 from dataclasses import asdict, replace

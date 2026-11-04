@@ -8,6 +8,7 @@ second API process from bypassing the per-scope publication gates.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import sqlite3
 import threading
@@ -348,6 +349,7 @@ class SQLiteStateStore:
         result: dict,
         *,
         scope_attributes: dict | None = None,
+        expected_publication: dict | None = None,
     ) -> dict:
         """T1: commit all semantic changes and their durable projection intent."""
         if not request_id or not payload_digest:
@@ -381,6 +383,31 @@ class SQLiteStateStore:
                 raise StateUnavailable(
                     "scope has an unpublished mutation; reconcile first"
                 )
+            if expected_publication is not None:
+                if (current["published_seq"] != expected_publication["published_seq"]
+                        or current["profile_hash"] != expected_publication["profile_hash"]
+                        or set(expected_publication["memories"]) != set(uids)
+                        or mutation.delete_uids):
+                    raise Conflict("replacement publication frontier changed")
+                originals = self.get_memories(scope, uids)
+                for uid, guard in expected_publication["memories"].items():
+                    old = originals.get(uid)
+                    if (old is None or old.version != guard["version"]
+                            or old.commit_seq != guard["commit_seq"]
+                            or digest(asdict(old)) != guard["canonical_sha256"]):
+                        raise Conflict("replacement canonical source changed")
+                    # OCR field maintenance also binds the exact stored JSON
+                    # bytes. Check inside this same T1 transaction; a parsed
+                    # canonical hash alone cannot detect serialization drift.
+                    exact = (guard.get("raw_data_sha256"), guard.get("metadata_sha256"))
+                    if any(value is not None for value in exact):
+                        if not all(isinstance(value, str) and len(value) == 64 for value in exact):
+                            raise Conflict("replacement exact JSON guard is incomplete")
+                        row = db.execute("SELECT raw_data,metadata FROM memories WHERE scope=? AND logical_uid=?",
+                                         (scope.key, uid)).fetchone()
+                        if row is None or tuple(hashlib.sha256(row[key].encode("utf-8")).hexdigest()
+                                                for key in ("raw_data", "metadata")) != exact:
+                            raise Conflict("replacement exact JSON source changed")
             seq = current["canonical_seq"] + 1
             if scope_attributes is not None:
                 db.execute("INSERT INTO scope_attributes VALUES (?,?) ON CONFLICT(scope) "

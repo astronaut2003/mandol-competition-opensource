@@ -16,25 +16,26 @@ def _source(memory, scope):
                    metadata={"aml": True, "user_id": scope.user_id})
 
 
-def _provider(calls):
+def _provider(calls, model='gpt-4o-mini-2024-07-18'):
     def complete(messages):
         payload = json.loads(messages[-1]["content"])
         calls.append(payload["stage"])
         assert "untrusted" in messages[0]["content"]
         source = payload["sources"][0]
-        return {"status": "PASS", "response_model": "gpt-4o-mini-2024-07-18", "finish_reason": "stop",
+        return {"status": "PASS", "response_model": model, "finish_reason": "stop",
                 "content": json.dumps({"summaries": [{"text": source["text"], "evidence": [{
                     "source_uid": source["source_uid"], "quote": source["text"]}],
                     "context_source_uids": [], "confidence": 1.0}]}), "usage": {}, "latency_ms": 0}
     return complete
 
 
-def test_canonical_only_facade_replay_and_stale_source_guard(store, profile, scope, memory, tmp_path):
+@pytest.mark.parametrize('response_model', ['gpt-4o-mini-2024-07-18', 'openai/gpt-4o-mini'])
+def test_canonical_only_facade_replay_and_stale_source_guard(store, profile, scope, memory, tmp_path, response_model):
     c, _ = coordinator(store, profile, tmp_path)
     raw = _source(memory, scope)
     c.apply(scope, "raw", "raw", Mutation(memories=(raw,)), {})
     calls = []
-    facade = HighLevelMemoryBuilder.from_competition(c, _provider(calls),
+    facade = HighLevelMemoryBuilder.from_competition(c, _provider(calls, response_model),
                 policy=HighLevelMemoryPolicy(hierarchical_enabled=True))
     try:
         first = facade.build_session(scope, [raw.logical_uid])

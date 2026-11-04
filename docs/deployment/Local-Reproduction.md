@@ -1,111 +1,95 @@
-# Local deployment
+# Local reproduction
 
-Run these commands from the repository root after the
-[Quick Start installation](../../README.md#quick-start). Use new storage and
-your own authorized model services. This guide deploys the frozen T0/C0/M0
-profiles; storage locations and endpoint origins are configurable.
+Use Linux, Python 3.12, and the locked installation in [README](../../README.md).
+This guide selects the current cloud workflow. Earlier Querit/BGE examples are
+historical recipes with different model bindings.
 
-## 1. Start Qdrant
+## 1. Create isolated storage and Qdrant
 
 ```bash
 docker run -d --name mandol-public-qdrant \
   -p 127.0.0.1:6333:6333 \
   -v mandol-public-qdrant:/qdrant/storage qdrant/qdrant:v1.19.1
-```
-
-Use an unused name, port, and volume. The application uses qdrant-client **1.19.0**.
-With the supplied configuration, track roots are `data/textual`, `data/code`,
-and `data/multimodal`; collections are `textual_aml_v4_v1`, `code_aml_v4_v1`, and
-`multimodal_aml_v4_v1`. Root paths must be distinct and non-nested. Keep the
-Multimodal MediaStore with its canonical SQLite state.
-
-Qdrant and inference ports should remain private. The API processes do not start,
-stop, or clear Qdrant. Never attach destructive tests to an existing deployment.
-
-## 2. Configure local templates
-
-```bash
 mkdir -p configs/local
-cp configs/deployment/frozen-bf16.example.toml configs/local/deployment.toml
-cp configs/deployment/serving-bindings.example.json configs/local/serving-bindings.json
-export MANDOL_INFERENCE_BINDINGS="$PWD/configs/local/serving-bindings.json"
+cp configs/deployment/current-cloud.example.toml configs/local/deployment.toml
 ```
 
-Edit the TOML to set storage and endpoint locations. Replace its VLM
-`example.invalid` origin. Edit the JSON bindings to match actual model artifact
-roots and served aliases, preserving the pinned model revisions, serving
-versions, and BF16 recipes. Set bindings before initializing canonical storage;
-the runtime refuses incompatible profile/precision adoption.
+Use unused container/volume names. The default runtime roots are `data/textual`,
+`data/code` and `data/multimodal`, with distinct `*_aml_v4_v1` collections.
+Do not point reproduction or regression tests at a live memory store.
+The APIs never manage Qdrant's lifecycle. Keep Multimodal MediaStore with its
+canonical state when moving or backing up a completed reproduction.
 
-TOML does not expand `${VARIABLE}` strings. Supported environment overrides take
-precedence over configured values:
+## 2. Configure authorized services and secrets
 
-| Setting | Environment variable |
+In your local TOML, replace `https://vlm.example.invalid/v1` with an authorized
+OpenAI-compatible service that supports image input and the `gpt-4o-mini` wire
+model. The current recipe uses direct native DashScope Qwen3.7 reranking and a
+local CPU bridge for paired v4 Dense/native Sparse. The provider endpoint can
+be adjusted to the authorized region, preserving model and API contracts.
+
+Supply these variables through your environment or secret manager:
+
+| Variable | Purpose |
 |---|---|
-| Runtime parent directory | `MANDOL_RUNTIME_ROOT` |
-| Qdrant origin | `MANDOL_QDRANT_ENDPOINT` |
-| Track storage | `MANDOL_<TRACK>_STORAGE_ROOT` |
-| Track namespace | `MANDOL_<TRACK>_NAMESPACE` |
-| Track inference origin | `MANDOL_<TRACK>_<CHANNEL>_ENDPOINT` |
-| Serving bindings JSON | `MANDOL_INFERENCE_BINDINGS` |
-| Memory API credential | `MANDOL_MEMORY_SYSTEM_KEY` or `MANDOL_MEMORY_SYSTEM_KEY_FILE` |
-| Qdrant credential, if required | `MANDOL_QDRANT_API_KEY` or `MANDOL_QDRANT_API_KEY_FILE` |
+| `MANDOL_MEMORY_SYSTEM_KEY` or its `_FILE` form | Authenticate calls to the Memory APIs. |
+| `DASHSCOPE_API_KEY` | v4 bridge and native Qwen reranker account credential. |
+| `CLOSEAI_API_KEY` | Credential read by the current VLM client; `MANDOL_MM_VLM_API_KEY_ENV` can select another variable name. |
+| `MANDOL_MULTIMODAL_VLM_ENDPOINT` | Optional environment override for the configured VLM URL. |
+| `MANDOL_QDRANT_API_KEY` or its `_FILE` form | Optional Qdrant authentication. |
+| `MANDOL_RELIABILITY_CONFIG` | Optional local JSON for process-shared provider admission. |
 
-`<TRACK>` is `TEXTUAL`, `CODE`, or `MULTIMODAL`; `<CHANNEL>` is an applicable
-`EMBEDDING`, `SPARSE`, `RERANKER`, or `VLM`. Track-specific Memory System Key
-variables and their `_FILE` forms override the shared API credential. Do not set
-both a secret's direct value and its file mount.
+TOML does not expand shell variables. `.env.example` is a reference, not an
+automatically loaded file. Do not configure a secret value and its file mount
+simultaneously. Provider clients may have different supported mount aliases;
+the v4 bridge expects its provider key in the service environment.
 
-Provider clients read `DASHSCOPE_API_KEY` and `CLOSEAI_API_KEY` from their service
-environments. Inject them with your secret manager; these clients do not
-automatically read `_FILE` aliases. [.env.example](../../.env.example) is a
-variable-name reference and is not loaded automatically. Do not put secrets in
-the TOML, serving JSON, commands, or URLs.
+The application `DASHSCOPE_API_KEY` and a participant leaderboard/Eval Key have
+different purposes. This reproduction does not need a leaderboard key or
+create/continue an official evaluation.
 
-## 3. Start the CPU v4 bridge
+## 3. Start the CPU embedding bridge
 
-The HTTP bridge package is installed by the Quick Start. In its environment with
-`DASHSCOPE_API_KEY` supplied:
+In a terminal with the authorized `DASHSCOPE_API_KEY` supplied:
 
 ```bash
 .venv/bin/python -m uvicorn mandol_inference.dashscope_bridge:create_app \
   --factory --host 127.0.0.1 --port 18620 --workers 1 --no-access-log
 ```
 
-The bridge issues paired `text-embedding-v4` Dense/native Sparse requests to the
-provider. `AML_V4_PROVIDER_ORIGIN` overrides the provider origin if needed.
-Health/admission may make real provider requests. T0/M0 consume both lanes;
-C0 consumes only Dense and retains lexical fallback. No SPLADE server is needed.
+All tracks use this origin; Textual and Multimodal consume paired Dense/native
+Sparse. Coding's selected policy supports native Sparse/Dense with its explicit
+frontier/fallback behavior. No SPLADE GPU service is required. Bridge admission
+and API startup may make real model calls and consume the authorized account's
+quota. Keep these services private.
 
-## 4. Start Querit and BGE
+## 4. Configure shared provider admission
 
-Use [Inference deployment](Inference.md) for the pinned GPU environments and
-serving arguments. Querit exposes its native classification endpoints directly.
-The CPU BGE bridge translates the native serving schema:
+If using `MANDOL_RELIABILITY_CONFIG`, create `configs/local/reliability.json`:
 
-```bash
-export MANDOL_MM_RETRIEVAL_PROFILE="$PWD/configs/profiles/aml-official-eligible/multimodal-v1.json"
-export MANDOL_VLLM_RERANKER_ENDPOINT=http://127.0.0.1:8004
-.venv/bin/python -m uvicorn mandol_inference.vllm_bridge:create_reranker_app \
-  --factory --host 127.0.0.1 --port 18621 --workers 1 --no-access-log
+```json
+{
+  "retry_budget_seconds": 1740,
+  "retry_max_attempts": 8,
+  "provider_origins": ["https://dashscope.aliyuncs.com", "https://cn-beijing.maas.qianwenaiapi.com"],
+  "state_path": "data/provider-admission.sqlite3",
+  "models": {
+    "text-embedding-v4": {"usage_limit": 80000, "usage_period": 60, "request_limit": 80, "request_period": 60},
+    "qwen3.7-text-rerank": {"usage_limit": 80000, "usage_period": 60, "request_limit": 80, "request_period": 60}
+  }
+}
 ```
 
-Optional `MANDOL_TEXTUAL_RERANKER_REPLICAS` and
-`MANDOL_MULTIMODAL_RERANKER_REPLICAS` select same-model replicas. One replica
-scores a complete Search attempt; bounded failover discards partial results and
-rescores the complete candidate set. Keep model revision, dtype, and recipe
-identical within each pool.
+These numbers are artificial examples, not account entitlements. Replace each
+window with **80% of your own verified provider limit**, preserving its period.
+Use an absolute path for `state_path` and share the same file among all bridge/API
+processes using that provider account. Configure every actual provider origin.
+The admission database contains counters, not memories or credentials. Do not
+reuse any existing database from another deployment.
 
-## 5. Configure VLM and start the APIs
+## 5. Start one process per API
 
-Set `MANDOL_MULTIMODAL_VLM_ENDPOINT` to your authorized OpenAI-compatible base URL
-and supply `CLOSEAI_API_KEY` in the API environment. The logical model is
-`gpt-4o-mini-closeai`; the wire request model is `gpt-4o-mini`. An alternative
-credential variable name can be selected with `MANDOL_MM_VLM_API_KEY_ENV`.
-For the unified TOML, `MANDOL_MM_VLM_BASE_URL` alone does not override a configured
-unified VLM endpoint; use `MANDOL_MULTIMODAL_VLM_ENDPOINT`.
-
-With Qdrant and inference services ready, run one track per terminal:
+In three terminals with the necessary environment:
 
 ```bash
 .venv/bin/python scripts/start_api.py textual --config configs/local/deployment.toml
@@ -113,36 +97,26 @@ With Qdrant and inference services ready, run one track per terminal:
 .venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml
 ```
 
-The launcher binds to loopback ports **18600 / 18601 / 18602**, verifies frozen
-artifacts, and rejects incompatible research/ranking overrides. It uses one
-worker per track. Use an HTTPS reverse proxy with an access policy for remote
-clients; keep storage, inference, and operational routes on a trusted network.
-Warmup validates dependencies before readiness and may call authorized models.
+The launcher checks the public integrity manifest, selects the versioned OCR
+prompt and `source-grounded-recall-v4` evidence policy, and uses 1,740-second request budgets with
+8 active + 8 waiting operations per process. Ports are 18600, 18601 and 18602 on
+loopback. Explicitly opting into another profile, prompt, model or precision
+defines a different reproduction method. See [current workflow](../method/Current-Workflow.md).
 
-## Troubleshooting
+Supply an HTTPS reverse proxy/access policy when exposing the APIs remotely.
+The application does not install certificates, alter DNS/firewall rules, or
+discover/stop unrelated processes. Stop foreground processes using Ctrl-C and
+allow ongoing requests to drain before restarting the SQLite writer.
 
-| Symptom | Check |
-|---|---|
-| Missing Memory System Key | Supply the environment variable or its supported `_FILE` mount. |
-| `/health` succeeds but `/readyz` fails | Check the track's inference endpoints, model identities, and publication state. |
-| VLM connection or identity failure | Replace the placeholder origin, supply the configured credential variable, and verify the wire model. |
-| Frozen startup rejects an override | Unset research/quality variables; use the fixed profile and model/prompt/schema selections. |
-| Serving contract mismatch | Compare bindings with artifact root, served alias, `/version`, and dtype. |
-| Collection/profile/namespace mismatch | Restore matching bindings and canonical state; do not clear or silently adopt a collection. |
-| C0 Dense is degraded | Check provider/Qdrant availability and wait for a complete projection frontier; lexical Add/Search remains available. |
+## Validation and troubleshooting
 
-Inspect operational status without logging memory payloads or credentials. Stop
-only processes you started, using Ctrl-C/SIGTERM and graceful shutdown before
-restarting a SQLite writer.
+First run synthetic tests and then your own artificial Add/Search example.
+Check credentials, endpoint contract, provider capacity, tokenizer resources,
+and typed error metadata when a dependency is unavailable. A healthy API does
+not by itself establish provider/model equivalence or retrieval accuracy.
 
-## Persistence and recovery
-
-Keep runtime roots, matching serving identities, and the Qdrant volume across
-restarts. Published state is reused and pending projection work is reconciled.
-T0/M0 keep their required-vector acknowledgement policy; C0 can remain lexical
-while optional Dense is unavailable.
-
-Back up consistent SQLite state together with MediaStore. Qdrant is a vector
-projection and does not replace canonical state. Validate restores on scratch
-resources before operational use. A relocated Multimodal retrieval profile is
-accepted only if its bytes match the frozen artifact.
+Persist canonical state, MediaStore and matching vector projections across
+normal restarts. Do not change model identities under an existing collection,
+clear caches to hide failures, or restore an older memory database over newer
+data. Offline repair utilities require their own ownership, identity and
+stopped-writer checks; fresh reproduction does not require historical repair.

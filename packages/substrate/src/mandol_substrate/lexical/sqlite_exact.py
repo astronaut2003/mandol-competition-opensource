@@ -9,6 +9,7 @@ candidates. Search requires a publication read lease from the coordinator.
 from __future__ import annotations
 
 import math
+import json
 import sqlite3
 from collections import Counter
 from contextlib import contextmanager
@@ -221,15 +222,12 @@ class SqliteExactBm25Backend:
         if not 0 < limit <= 16384:
             raise ValueError("lexical limit outside bounded candidate budget")
         terms = Counter(self.processor.query(query).split())
-        if len(terms) > 512:
-            raise ValueError("too many distinct query terms")
         if not terms or candidate_uids == [] or spaces == []:
             return None, ()
         if self.statistics_policy == "candidate-subset-v1" and candidate_uids is not None:
             return self._subset_query(scope, terms, limit, spaces, candidate_uids)
-        values = ",".join("(?,?)" for _ in terms)
-        params = [v for item in terms.items() for v in item]
-        sql = f"""WITH q(term,qtf) AS (VALUES {values}),
+        term_sql, params = self._query_terms(terms)
+        sql = f"""WITH q(term,qtf) AS ({term_sql}),
         scores AS (
           SELECT p.logical_uid, SUM(q.qtf * ln(1.0+(c.n_docs-s.df+0.5)/(s.df+0.5))
             * p.tf*(?+1.0)/(p.tf+?*(1.0-?+?*d.doc_len /
@@ -260,6 +258,16 @@ class SqliteExactBm25Backend:
         params.extend([self.minimum_score, limit])
         return sql, params
 
+    @staticmethod
+    def _query_terms(terms):
+        # Every valid query retains every term and its multiplicity. One
+        # JSON parameter avoids SQLite's host-parameter limit without truncating
+        # terms, splitting Top-K, or changing BM25 statistics/score aggregation.
+        return (
+            "SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?)",
+            [json.dumps(list(terms.items()), ensure_ascii=False)],
+        )
+
     def _subset_query(self, scope, terms, limit, spaces, candidate_uids):
         if len(candidate_uids) > 16384:
             raise ValueError("candidate filter exceeds bounded budget")
@@ -271,9 +279,9 @@ class SqliteExactBm25Backend:
                 raise ValueError("too many candidate spaces")
             eligible += " AND logical_uid IN (SELECT logical_uid FROM memberships WHERE scope=? AND space_id IN (" + ",".join("?" for _ in spaces) + "))"
             params.extend([scope.key, *spaces])
-        values = ",".join("(?,?)" for _ in terms)
-        params.extend(v for item in terms.items() for v in item)
-        sql = f"""WITH eligible AS ({eligible}), q(term,qtf) AS (VALUES {values}),
+        term_sql, term_params = self._query_terms(terms)
+        params.extend(term_params)
+        sql = f"""WITH eligible AS ({eligible}), q(term,qtf) AS ({term_sql}),
           c AS (SELECT count(*) AS n, coalesce(avg(doc_len),1.0) AS average FROM eligible),
           df AS (SELECT p.term,count(*) AS n FROM lexical_postings p JOIN eligible d
                  ON p.scope=d.scope AND p.logical_uid=d.logical_uid GROUP BY p.term),

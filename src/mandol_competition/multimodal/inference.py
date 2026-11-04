@@ -56,11 +56,25 @@ def remote_encoders(config, profile):
 
 
 def remote_reranker(config, profile):
-    from mandol_competition.inference.replicas import replica_endpoints, ReplicaReranker
-    endpoints = replica_endpoints('multimodal', config.reranker_endpoint)
-    replicas = [HTTPRerankerClient(endpoint, recipes(profile)[2], timeout=config.inference_timeout)
-                for endpoint in endpoints]
-    client = ReplicaReranker(replicas) if len(replicas) > 1 else replicas[0]
+    from mandol_competition.inference.replicas import replica_endpoints, create_pool
+    from .search_profiles import QUERIT, QWEN37, descriptor
+    descriptor(profile, config.search_policy)
+    endpoints = replica_endpoints('multimodal', config.reranker_endpoint,
+                                 config.reranker_pool.get('endpoints'))
+    if config.search_policy == QWEN37:
+        from mandol_competition.inference.dashscope_rerank import from_environment
+        replicas = [from_environment(endpoint, credential_env=config.reranker_credential_env,
+                                     timeout=config.inference_timeout) for endpoint in endpoints]
+    elif config.search_policy == QUERIT:
+        from mandol_competition.textual.core.remote_inference import RemoteQueritClient
+        from mandol_competition.textual.core.querit_reference import expected_profile
+        replicas = [RemoteQueritClient(endpoint, expected_profile(batch_size=1),
+                                      timeout=config.inference_timeout, endpoint_policy='deployment')
+                    for endpoint in endpoints]
+    else:
+        replicas = [HTTPRerankerClient(endpoint, recipes(profile)[2], timeout=config.inference_timeout)
+                    for endpoint in endpoints]
+    client = create_pool(replicas, config.reranker_pool)
     if 'post_rerank_policy' in profile.options:
         from .reranking import RankBlendedReranker
         try:

@@ -14,6 +14,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--qdrant', required=True)
     p.add_argument('--container', required=True)
+    p.add_argument('--qdrant-binary', type=Path,
+                   help='Optional Qdrant 1.19.1 binary for additional owned-process lifecycle tests')
     p.add_argument('--output', type=Path, default=ROOT/'.test-results')
     a = p.parse_args()
     url = urlsplit(a.qdrant)
@@ -33,6 +35,8 @@ def main():
             raise SystemExit('Qdrant is nonempty; refuse to adopt existing collections')
     env = {k:v for k,v in os.environ.items() if k in ('PATH','HOME','LANG','LC_ALL','TMPDIR','SYSTEMROOT')}
     env.update(MANDOL_TEST_QDRANT=a.qdrant, PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+    if a.qdrant_binary is not None:
+        env['MANDOL_TEST_QDRANT_BINARY'] = str(a.qdrant_binary.resolve(strict=True))
     a.output.mkdir(parents=True, exist_ok=True)
     command=[sys.executable,'-m','pytest','tests','-q',
         '--ignore=tests/aml_contract/test_real_wire.py',

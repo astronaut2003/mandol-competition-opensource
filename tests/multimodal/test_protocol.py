@@ -128,11 +128,15 @@ def test_search_response_has_exact_wrapper_and_rank_order():
 
 
 @pytest.mark.parametrize("payload", [{"id": "", "content": [{"type": "text", "text": "x"}]},
-                                     {"id": "a", "content": []},
-                                     {"id": "a", "content": [IMAGE], "metadata": {}}])
-def test_search_item_rejects_malformed_or_extra_fields(payload):
+                                     {"id": "a", "content": []}])
+def test_search_item_rejects_malformed_required_fields(payload):
     with pytest.raises(ValidationError):
         SearchItem.model_validate(payload)
+
+
+def test_search_item_ignores_undeclared_metadata_as_official_contract_requires():
+    item=SearchItem.model_validate({'id':'a','content':[IMAGE],'metadata':{'private':'not part of the wire contract'}})
+    assert 'metadata' not in item.model_dump()
 
 
 def test_config_defaults_and_user_isolation(tmp_path):

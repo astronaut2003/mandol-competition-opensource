@@ -144,6 +144,9 @@ class EpisodeRetriever:
                     raise ValueError("Raw model channel returned invalid or out-of-scope candidates")
                 return matches
             except Exception as exc:
+                from mandol_competition.inference.errors import InferenceRateLimited, InferenceDeadlineExceeded
+                if isinstance(exc, (InferenceRateLimited, InferenceDeadlineExceeded)):
+                    raise
                 from mandol_substrate.state import ProfileMismatch
                 if isinstance(exc, ProfileMismatch):
                     raise
@@ -214,6 +217,9 @@ class EpisodeRetriever:
                     raise ValueError("Episode model channel returned invalid or out-of-scope candidates")
                 return matches[:self.config.candidate_k]
             except Exception as error:
+                from mandol_competition.inference.errors import InferenceRateLimited, InferenceDeadlineExceeded
+                if isinstance(error, (InferenceRateLimited, InferenceDeadlineExceeded)):
+                    raise
                 self.fallback_count += 1
                 logging.getLogger(__name__).warning("Episode model retrieval failed (%s); using local lexical fallback", type(error).__name__)
         return self.episode_index.search(query, top_k=self.config.candidate_k)

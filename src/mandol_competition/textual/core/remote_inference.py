@@ -320,7 +320,7 @@ class RemoteQueritTokenizer:
 
 
 class RemoteQueritClient(RemoteClient):
-    alias, root = "querit-4b", "/models/Querit-4B"
+    alias, root = "querit-4b", "/opt/models/Querit-4B-vllm"
     path, task, max_tokens = "/classify", "querit", 40960
 
     def __init__(self, url, profile, **kwargs):

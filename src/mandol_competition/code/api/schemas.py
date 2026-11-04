@@ -2,11 +2,11 @@
 
 Contract reference (https://agentmemories.ai/docs):
 
-* Add request : request_id, messages[{role, content, timestamp?}], user_id,
+* Add request : request_id, messages[{role, content: string|text parts, timestamp?}], user_id,
                 session_id
 * Add response: HTTP 200 with {"success": true, "request_id", "user_id",
                 "session_id"} (all ids echoed byte-for-byte)
-* Search req  : query, options?, user_id, top_k
+* Search req  : query: string|text parts, options?, user_id, top_k
 * Search resp : {"data": [{id, content, score?, created_at?}]} ordered by
                 relevance, at most top_k items
 """
@@ -16,20 +16,26 @@ from __future__ import annotations
 from typing import List, Optional, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
+from mandol_competition.runtime.text_content import TextContent, text_content
 
 
 class AddMessage(BaseModel):
     """One message inside an Add request."""
 
     role: Literal["user", "assistant"]
-    content: str = Field(..., min_length=1)
-    timestamp: Optional[StrictInt] = Field(default=None, description="Unix milliseconds")
+    content: TextContent
+    timestamp: Optional[StrictInt] = Field(default=None,ge=-(2**63),le=2**63-1,description="Unix milliseconds in the canonical SQLite integer range")
 
     @field_validator("content")
     @classmethod
-    def _content_not_blank(cls, value: str) -> str:
-        if not value.strip():
+    def _content_not_blank(cls, value):
+        if not text_content(value).strip():
             raise ValueError("content must not be blank")
+        return value
+
+    def memory_message(self) -> dict:
+        value = self.model_dump()
+        value["content"] = text_content(self.content)
         return value
 
     @field_validator("role")
@@ -55,21 +61,24 @@ class AddResponse(BaseModel):
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
+    query: TextContent
     options: Optional[List[str]] = None
     user_id: str = Field(..., min_length=1)
     top_k: StrictInt = Field(..., ge=1, le=10000)
 
     @field_validator("query")
     @classmethod
-    def _query_not_blank(cls, value: str) -> str:
-        if not value.strip():
+    def _query_not_blank(cls, value):
+        if not text_content(value).strip():
             raise ValueError("query must not be blank")
         return value
 
+    def query_text(self) -> str:
+        return text_content(self.query)
+
 
 class SearchHit(BaseModel):
-    model_config = ConfigDict(allow_inf_nan=False)
+    model_config = ConfigDict(strict=True,allow_inf_nan=False)
     id: str = Field(..., min_length=1)
     content: str = Field(..., min_length=1)
     score: Optional[float] = None

@@ -1,9 +1,9 @@
 """Memory System Key authentication for the AML adapter.
 
-The adapter accepts ``Token``, ``Bearer`` and ``X-Api-Key`` credentials. Every
-Add / Search call must present the configured key. Unified API factories reject
-an empty key unless ``MANDOL_ALLOW_UNAUTHENTICATED_DEV=1`` explicitly enables
-local development without authentication.
+AML accepts the ``Token``, ``Bearer`` and ``X-Api-Key`` schemes. When a key is
+configured, every Add / Search call must present it. When no key is configured
+the endpoints are open - AML permits unauthenticated endpoints only for the
+public smoke compatibility check, so set a key before a formal evaluation.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 import json
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from mandol_competition.textual.core.run_quality import load_capsule, materialize_policies
@@ -53,10 +53,19 @@ class Settings:
     competition_return_policy: str | None = None
     experimental_hlm_policy: str | None = None
     experimental_quality_profile: str | None = None
+    evidence_profile: str = "default"
     selector_endpoint: str | None = None
     selector_api_key_env: str = "CLOSEAI_API_KEY"
+    reranker_pool: dict = field(default_factory=dict)
+    # 'profile' preserves historical capsules; unified named-v4 factories
+    # explicitly select the current external default without editing storage.
+    reranker_backend: str = 'profile'
+    reranker_credential_env: str = 'DASHSCOPE_API_KEY'
 
     def validate(self):
+        from mandol_competition.inference.dashscope_rerank import BACKEND
+        if self.reranker_backend not in {'profile', BACKEND}:
+            raise ValueError('unknown Textual reranker backend')
         if self.qdrant_mode not in {"external", "owned"}:
             raise ValueError("explicit external or owned Qdrant mode required")
         expected_collection = "textual_aml_v4_v1" if self.inference_contract == OFFICIAL_CONTRACT else "textual_v1"
@@ -97,6 +106,11 @@ class Settings:
         """No original workspace paths, runtime module patching or model fallback."""
         self.validate()
         official = self.inference_contract == OFFICIAL_CONTRACT
+        from ..core.evidence_profiles import (
+            OBSERVATION_T0, observation_profile_path, resolve_evidence_profile,
+        )
+        selected_evidence = resolve_evidence_profile(self.evidence_profile, official=official,
+            experimental=bool(self.experimental_quality_profile or self.experimental_hlm_policy))
         quality_sha = AML_V4_QUALITY_SHA256 if official else QUALITY_SHA256
         if self.qdrant_mode == "external":
             from ..runtime import seed_frozen_capsule
@@ -109,10 +123,17 @@ class Settings:
         capsule = load_capsule(root, quality, profile)
         paths = materialize_policies(root, capsule)
         candidate = None
-        if self.experimental_quality_profile:
+        candidate_path = self.experimental_quality_profile
+        if selected_evidence == OBSERVATION_T0:
+            candidate_path = observation_profile_path()
+        if candidate_path:
             from ..core.quality_candidate import bind_candidate
-            paths, candidate = bind_candidate(root, self.experimental_quality_profile,
+            paths, candidate = bind_candidate(root, candidate_path,
                 capsule=capsule, profile=profile, baseline_sha256=quality_sha)
+            if candidate.get("observation_order_policy") and self.experimental_hlm_policy:
+                raise StateUnavailable("Observation-order candidate requires the frozen raw-only pipeline")
+            if selected_evidence == OBSERVATION_T0:
+                candidate = dict(candidate, status="DEFAULT_USER_APPROVED_PUBLIC_PROXY")
         for field, policy in (
             ("competition_profile", "profile"),
             ("competition_query_policy", "query"),
@@ -127,6 +148,7 @@ class Settings:
                 )
             setattr(self, field, str(paths[policy]))
         self.quality_candidate = candidate
+        self.selected_evidence_profile = candidate["id"] if candidate else selected_evidence
         return self
 
     @classmethod
@@ -145,6 +167,7 @@ class Settings:
             qdrant_api_key=os.getenv("QDRANT_API_KEY"),
             experimental_hlm_policy=os.getenv("AML_EXPERIMENTAL_HLM_POLICY"),
             experimental_quality_profile=os.getenv("MANDOL_TEXTUAL_QUALITY_CANDIDATE"),
+            evidence_profile=os.getenv("MANDOL_TEXTUAL_EVIDENCE_PROFILE", "default"),
             selector_endpoint=os.getenv("MANDOL_TEXTUAL_SELECTOR_ENDPOINT"),
             selector_api_key_env=os.getenv("MANDOL_TEXTUAL_SELECTOR_API_KEY_ENV", "CLOSEAI_API_KEY"),
             evaluation_namespace=os.getenv("AML_EVALUATION_NAMESPACE", "textual"),

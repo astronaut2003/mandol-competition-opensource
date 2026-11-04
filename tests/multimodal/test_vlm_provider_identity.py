@@ -12,7 +12,7 @@ def test_explicit_wire_model_preserves_deployment_alias():
 
     def complete(**kwargs):
         captured.update(kwargs)
-        return SimpleNamespace(choices=[SimpleNamespace(
+        return SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop',
             message=SimpleNamespace(content='{"description":"red square"}'))], usage=None)
 
     sdk = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=complete)))

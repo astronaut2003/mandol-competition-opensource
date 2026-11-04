@@ -23,6 +23,21 @@ from mandol_substrate.state import (
     StateUnavailable,
 )
 from mandol_substrate.state.models import digest
+from mandol_competition.observability.diagnostics import diagnostic_call, diagnostic_stage
+
+
+def _generation_selector(settings):
+    from mandol_competition.inference.evidence_selector import EvidenceSelector
+    from mandol_competition.inference.generation import generation_route
+    route = generation_route(settings.selector_endpoint, 'gpt-4o-mini',
+                             credential_env=settings.selector_api_key_env)
+    if not route.endpoint:
+        raise StateUnavailable('Explicit mini selector endpoint/credential required')
+    try:
+        key = route.key()
+    except ValueError:
+        raise StateUnavailable('Explicit mini selector endpoint/credential required') from None
+    return EvidenceSelector(route.endpoint, api_key=key, timeout=90)
 
 
 class CompetitionMemoryService:
@@ -48,6 +63,7 @@ class CompetitionMemoryService:
         self.hlm_builder = None
         self.answer_utility_policy = None
         self.evidence_selector = None
+        self.observation_order_policy = None
 
     @property
     def ready(self):
@@ -57,9 +73,32 @@ class CompetitionMemoryService:
     def init_error(self):
         return self._init_error
 
+    def _remote_reranker_replicas(self, endpoints, *, endpoint_policy):
+        """Default frozen Querit clients; explicit test compositions may inject a
+        different, independently bound model without impersonating Querit.
+        """
+        from mandol_competition.inference.dashscope_rerank import BACKEND, from_environment
+        settings = getattr(self, 'settings', None)
+        backend = getattr(settings, 'reranker_backend', 'profile')
+        if backend == BACKEND:
+            return [from_environment(endpoint, credential_env=settings.reranker_credential_env,
+                                     timeout=self.profile.options['native_reranker_request_timeout'])
+                    for endpoint in endpoints]
+        if backend != 'profile':
+            raise ValueError('unknown Textual reranker backend')
+        from mandol_competition.textual.core.remote_inference import RemoteQueritClient
+        return [RemoteQueritClient(endpoint, self.reranker_runtime_options()["reranker_serving"],
+            timeout=self.profile.options["native_reranker_request_timeout"],
+            endpoint_policy=endpoint_policy) for endpoint in endpoints]
+
     def start(self):
         try:
             self.settings.bind_run()
+            self.observation_order_policy = None
+            metadata = getattr(self.settings, "quality_candidate", None) or {}
+            if metadata.get("observation_order_policy"):
+                from ..core.observation_order import ObservationOrderPolicy
+                self.observation_order_policy = ObservationOrderPolicy(**metadata["observation_order_policy"])
             self.profile = load_profile(self.settings.competition_profile)
             if self.settings.competition_return_policy:
                 self.return_policy = ReturnPolicy.load(
@@ -110,10 +149,7 @@ class CompetitionMemoryService:
             ):
                 raise StateUnavailable("embedding profile mismatch")
             if self.settings.inference_contract in {"vpc-vllm-029-v1", "vllm-http-v1", "aml-official-eligible-v1"}:
-                from mandol_competition.textual.core.remote_inference import (
-                    RemoteQueritClient,
-                    remote_encoders,
-                )
+                from mandol_competition.textual.core.remote_inference import remote_encoders
 
                 if official:
                     from mandol_competition.inference.clients import HTTPJointEncoders, HTTPEmbeddingClient, HTTPSparseEncoderClient
@@ -134,14 +170,12 @@ class CompetitionMemoryService:
                 self.splade = self.encoders.sparse if official else self.encoders.splade
                 if not official:
                     self._resources.extend((self.dense, self.splade))
-                from mandol_competition.inference.replicas import replica_endpoints, ReplicaReranker
-                endpoints = replica_endpoints('textual', self.settings.reranker_url)
-                replicas = [RemoteQueritClient(
-                    endpoint, self.reranker_runtime_options()["reranker_serving"],
-                    timeout=self.profile.options["native_reranker_request_timeout"],
-                    endpoint_policy="vpc" if self.settings.inference_contract == "vpc-vllm-029-v1" else "http",
-                ) for endpoint in endpoints]
-                self.reranker = ReplicaReranker(replicas) if len(replicas) > 1 else replicas[0]
+                from mandol_competition.inference.replicas import replica_endpoints, create_pool
+                endpoints = replica_endpoints('textual', self.settings.reranker_url,
+                                             self.settings.reranker_pool.get('endpoints'))
+                replicas = self._remote_reranker_replicas(endpoints,
+                    endpoint_policy="vpc" if self.settings.inference_contract == "vpc-vllm-029-v1" else "http")
+                self.reranker = create_pool(replicas, self.settings.reranker_pool)
                 self._resources.append(self.reranker)
                 self.reranker.validate_profile()
             else:
@@ -184,12 +218,7 @@ class CompetitionMemoryService:
                 from ..core.answer_utility import AnswerUtilityPolicy
                 self.answer_utility_policy=AnswerUtilityPolicy(**utility)
                 if self.answer_utility_policy.selector!='none':
-                    import os
-                    from mandol_competition.inference.evidence_selector import EvidenceSelector
-                    key=os.environ.get(self.settings.selector_api_key_env)
-                    if not self.settings.selector_endpoint or not key:
-                        raise StateUnavailable("Explicit mini selector endpoint/credential required")
-                    self.evidence_selector=EvidenceSelector(self.settings.selector_endpoint,api_key=key,timeout=90)
+                    self.evidence_selector=_generation_selector(self.settings)
                     self._resources.append(self.evidence_selector)
             if self.settings.experimental_hlm_policy:
                 import json
@@ -288,12 +317,6 @@ class CompetitionMemoryService:
             raise StateUnavailable("API backpressure")
         try:
             yield
-        except (StateUnavailable, ValueError):
-            raise
-        except Exception as exc:
-            raise StateUnavailable(
-                f"competition dependency failed: {type(exc).__name__}"
-            ) from exc
         finally:
             self._admission.release()
 
@@ -468,11 +491,16 @@ class CompetitionMemoryService:
         with self.admission(), self._hlm_lease(user_id, write=False):
             scope = self.scope(user_id)
             # Unknown users use the same run collection and an empty exact scope.
-            self.run.ensure_scope(scope)
+            diagnostic_call('scope', self.run.ensure_scope, scope)
             from ..core.query_inputs import candidate_query
-            retrieval_query = candidate_query(getattr(self.settings, "quality_candidate", None), query, choices,
+            retrieval_query = diagnostic_call('query_input', candidate_query, getattr(self.settings, "quality_candidate", None), query, choices,
                                                sparse_client=getattr(self.encoders, "splade", None))
-            dense, sparse = self.encoders.encode_query(retrieval_query)
+            if getattr(self.settings, 'inference_contract', None) == 'aml-official-eligible-v1':
+                from mandol_competition.inference.dashscope_rerank import BACKEND
+                if getattr(self.settings, 'reranker_backend', 'profile') == BACKEND:
+                    from ..core.rerank_query_views import plan_query as plan_rerank_query
+                    diagnostic_call('query_input', plan_rerank_query, query)
+            dense, sparse = diagnostic_call('embedding', self.encoders.encode_query, retrieval_query)
             utility=getattr(self,"answer_utility_policy",None)
             returned_pool=max(top_k,utility.candidate_k) if utility else top_k
             with self.coordinator.search_view(scope) as view:
@@ -487,11 +515,11 @@ class CompetitionMemoryService:
                     if policy
                     else max(top_k, int(options.get("rerank_k", 100)))
                 )
-                fused, _audit = self.retriever.retrieve(
+                fused, _audit = diagnostic_call('retrieval', self.retriever.retrieve,
                     view, retrieval_query, dense, sparse, top_k=depth
                 )
                 seeds = [u.uid for u, s in fused]
-                expanded = view.graph.traverse(
+                expanded = diagnostic_call('graph', view.graph.traverse,
                     seeds,
                     hops=options["graph_hops"],
                     per_node=options["graph_neighbors"],
@@ -516,7 +544,7 @@ class CompetitionMemoryService:
                         )
                     )
                 uids = list(dict.fromkeys(seeds + expanded))
-                canonical = self.state.get_memories(scope, uids)
+                canonical = diagnostic_call('candidate_hydration', self.state.get_memories, scope, uids)
                 if set(canonical) != set(uids):
                     raise StateUnavailable("graph hydration missing canonical node")
                 uids = self._live_candidates(scope, uids)
@@ -535,26 +563,29 @@ class CompetitionMemoryService:
                     fusion_scores = {unit.uid: score for unit, score in fused}
                     ordered = [(uid, fusion_scores.get(uid)) for uid in uids[:returned_pool]]
                 else:
-                    scores = self.reranker.rerank(
-                        query, [canonical[u].text_content for u in uids]
-                    )
-                    ordered = sorted(
-                        zip(uids, scores, strict=True),
-                        key=lambda item: (-item[1], item[0]),
-                    )[:returned_pool]
-                hits = [
-                    {
-                        "id": uid,
-                        "content": canonical[uid].text_content,
-                        "score": score,
-                        "created_at": datetime.fromtimestamp(
-                            canonical[uid].created_at_ms / 1000, UTC
-                        )
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                    }
-                    for uid, score in ordered
-                ]
+                    with diagnostic_stage('reranker'):
+                        from mandol_competition.inference.dashscope_rerank import BACKEND
+                        documents = [canonical[u].text_content for u in uids]
+                        if getattr(self.settings, 'reranker_backend', 'profile') == BACKEND:
+                            from ..core.rerank_query_views import rerank_query_views
+                            scores = rerank_query_views(self.reranker, query, documents)
+                        else:
+                            scores = self.reranker.rerank(query, documents)
+                        ordered=sorted(zip(uids,scores,strict=True),key=lambda item:(-item[1],item[0]))[:returned_pool]
+                with diagnostic_stage('result_construction'):
+                    hits = [
+                        {
+                            "id": uid,
+                            "content": canonical[uid].text_content,
+                            "score": score,
+                            "created_at": datetime.fromtimestamp(
+                                canonical[uid].created_at_ms / 1000, UTC
+                            )
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        }
+                        for uid, score in ordered
+                    ]
                 if self.context_policy is not None:
                     hits = self.context_policy.render(
                         scope, hits, {uid: canonical[uid] for uid, _ in ordered}
@@ -567,7 +598,11 @@ class CompetitionMemoryService:
                         max_context_chars=24000 if fallback else utility.max_context_chars)
                     hits,_budget_audit=budget.materialize(hits[:top_k],top_k)
                 elif self.return_policy is not None:
-                    hits, _budget_audit = self.return_policy.materialize(hits, top_k)
+                    hits, _budget_audit = diagnostic_call('evidence_budget', self.return_policy.materialize, hits, top_k)
+                if getattr(self, "observation_order_policy", None) is not None:
+                    hits, _order_audit = self.observation_order_policy.render(
+                        scope, hits, canonical, query=query, choices=choices,
+                        published_seq=view.published_seq)
                 return hits
 
     def health(self):
@@ -591,16 +626,32 @@ class CompetitionMemoryService:
         # later pass retries. It never recreates a collection or semantic output.
         while not self._maintenance_stop.wait(60):
             try:
+                from mandol_substrate.state.models import ScopeBusy
+                skipped_busy = False
                 for scope in self.state.iter_scopes():
                     if self._maintenance_stop.is_set():
                         return
-                    lease = self.run.maintenance_view(scope)
-                    with lease:
-                        current = self.state.scope_state(scope)
-                        if current["canonical_seq"] != current["published_seq"]:
-                            continue
-                        self.projection.gc_scope(scope)
-                self._maintenance_error = None
+                    entered_gc_scope = False
+                    try:
+                        lease = self.run.maintenance_view(scope)
+                        with lease:
+                            entered_gc_scope = True
+                            current = self.state.scope_state(scope)
+                            if current["canonical_seq"] != current["published_seq"]:
+                                continue
+                            self.projection.gc_scope(scope)
+                    except ScopeBusy:
+                        if entered_gc_scope:
+                            raise  # A failure inside GC must remain a real failure.
+                        # No GC operation began. Busy readers/writers are not
+                        # evidence of projection corruption or an unavailable
+                        # dependency; retry this scope on the next pass.
+                        skipped_busy = True
+                        continue
+                if not skipped_busy:
+                    # Preserve an earlier real GC failure until a complete
+                    # pass verifies all scopes, including any busy ones.
+                    self._maintenance_error = None
             except Exception as exc:  # noqa: BLE001 -- retain failure as not-ready; no fallback
                 self._maintenance_error = (
                     f"projection maintenance failed: {type(exc).__name__}"
@@ -620,6 +671,12 @@ class CompetitionMemoryService:
                            if hasattr(self, name)}}
 
     def stats(self):
+        from mandol_competition.inference.dashscope_rerank import BACKEND, recipe
+        from ..core.rerank_query_views import descriptor as query_view_descriptor
+        from mandol_competition.inference.embedding_query_views import descriptor as embedding_view_descriptor
+        backend = getattr(self.settings, 'reranker_backend', 'profile')
+        external = backend == BACKEND
+        bounded_embedding = self.settings.inference_contract == 'aml-official-eligible-v1'
         return {
             "backend": "qdrant",
             "retrieval_mode": "hybrid",
@@ -636,6 +693,18 @@ class CompetitionMemoryService:
             "graph": self.graphs.stats() if self._ready else {},
             "ready": self._ready,
             "quality_candidate": getattr(self.settings, "quality_candidate", None),
+            "evidence_profile": getattr(self.settings, "selected_evidence_profile", None),
+            "search_profile": {
+                "id": ("textual-v4-token-and-qwen37-token-guard-v5" if external else "textual-v4-query-token-split-v2")
+                    if bounded_embedding else ("textual-qwen37-query-split-v2" if external else "textual-profile-reranker-v1"),
+                "storage_profile_hash": self.profile.hash if self._ready else None,
+                "reranker_backend": backend,
+                "reranker_recipe_hash": recipe().hash if external else None,
+                "reranker_query_policy": query_view_descriptor() if external else None,
+                "embedding_query_policy": embedding_view_descriptor() if bounded_embedding else None,
+                "storage_and_document_encoding_changed": False,
+                "long_query_representation_changed": bounded_embedding,
+            },
         }
 
     def purge(self, user_id):

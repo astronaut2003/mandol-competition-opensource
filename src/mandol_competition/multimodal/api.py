@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
 from mandol_substrate.state.models import Conflict, StateUnavailable
 from qdrant_client.http.exceptions import ApiException
 
@@ -20,6 +19,13 @@ from .validation import PayloadError
 from .vlm.base import VisionExtractor
 from .vlm.fake import FakeVisionExtractor
 from .vlm.openai_compat import OpenAICompatExtractor, build_vision_client
+from .response import validate_response_media
+from mandol_competition.observability.diagnostics import diagnostic_call
+from mandol_competition.runtime.contract import (
+    SearchPlan,EXECUTION_TOP_K_LIMIT,validate_add_response,validate_search_response,
+)
+from mandol_competition.runtime.http_boundary import install_http_boundary,ErrorRule
+from mandol_competition.runtime.deadline import add_work_key
 
 
 def build_extractor(config: MultimodalConfig) -> VisionExtractor:
@@ -104,19 +110,6 @@ def create_app(
     app.state.backend = backend
     app.state.deadline_executor = deadlines
 
-    @app.exception_handler(StateUnavailable)
-    async def unavailable(request: Request, exc: StateUnavailable):
-        return JSONResponse(status_code=503, content={"detail": str(exc)})
-
-    @app.exception_handler(Conflict)
-    async def conflict(request: Request, exc: Conflict):
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    @app.exception_handler(ApiException)
-    @app.exception_handler(TimeoutError)
-    async def projection_unavailable(request: Request, exc: Exception):
-        return JSONResponse(status_code=503, content={"detail": "Qdrant operation unavailable; retry or reconcile"})
-
     def authenticate(request: Request) -> None:
         from mandol_competition.runtime.auth import require_auth
         require_auth(request, config.auth_token or "")
@@ -134,18 +127,15 @@ def create_app(
         try:
             report = purge_user(user_id=user_id, config=config, store=store, registry=registry)
         except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409,detail={'reason':'purge operation cannot complete'}) from None
         return vars(report)
 
     @app.post("/add", response_model=AddResponse, response_class=ProfiledJSONResponse, dependencies=[Depends(authenticate)])
     def add_memory(body: AddRequest, response: Response) -> dict[str, Any]:
         profile_id = profiler.response_id(response)
-        try:
-            return deadlines.run(lambda: profiler.call("add", add.handle, body, profile_id), seconds=config.add_timeout_seconds)
-        except ConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except PayloadError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
+        value=deadlines.run(lambda:diagnostic_call('add',profiler.call,'add',add.handle,body,profile_id),
+            seconds=config.add_timeout_seconds, key=add_work_key('multimodal', body))
+        return diagnostic_call('add_receipt',validate_add_response,body,value,AddResponse)
 
     @app.post(
         "/search", response_model=SearchResponse, response_class=ProfiledJSONResponse,
@@ -153,13 +143,20 @@ def create_app(
     )
     def search_memory(body: SearchRequest, response: Response) -> dict[str, Any]:
         profile_id = profiler.response_id(response)
-        try:
-            return deadlines.run(lambda: profiler.call("search", search.handle, body, profile_id), seconds=config.search_timeout_seconds)
-        except PayloadError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.reason) from exc
+        plan=SearchPlan(body.top_k,EXECUTION_TOP_K_LIMIT)
+        bounded=body.model_copy(update={'top_k':plan.execution_top_k})
+        value=deadlines.run(lambda:diagnostic_call('search',profiler.call,'search',search.handle,bounded,profile_id),
+            seconds=config.search_timeout_seconds)
+        value=diagnostic_call('response',validate_search_response,value,plan,SearchResponse)
+        return diagnostic_call('response',validate_response_media,value)
 
     from mandol_competition.runtime.body_limit import BodyLimitMiddleware
     app.add_middleware(BodyLimitMiddleware, max_bytes=config.max_request_bytes)
-    from mandol_competition.observability.runtime import install_observability
-    install_observability(app, "multimodal", ready=health, state=lambda: backend.state if backend else None)
+    # Media validation messages can reflect caller input or decoder messages.
+    # Only documented typed client errors get 413/422, with static reasons.
+    install_http_boundary(app,'multimodal',ready=health,state=lambda:backend.state if backend else None,
+        rules=(ErrorRule(PayloadError,413,'media or publication budget exceeded',when=lambda exc:exc.status_code==413),
+               ErrorRule(PayloadError,422,'invalid multimodal payload',when=lambda exc:exc.status_code==422),
+               ErrorRule(ApiException,503,'Qdrant operation unavailable; retry or reconcile'),
+               ErrorRule(TimeoutError,503,'dependency operation timed out; retry or reconcile')))
     return app

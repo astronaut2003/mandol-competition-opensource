@@ -17,6 +17,7 @@ dependencies = [
   "uvicorn==0.49.0",
   "httpx==0.28.1",
   "numpy==1.26.4",
+  "tokenizers==0.22.2",
 ]
 
 [project.optional-dependencies]
@@ -29,7 +30,7 @@ benchmark = ["nltk==3.9.1"]
 
 [project.urls]
 Homepage = "https://github.com/astronaut2003/mandol-competition-opensource"
-Documentation = "https://github.com/astronaut2003/mandol-competition-opensource#documentation"
+Documentation = "https://github.com/astronaut2003/mandol-competition-opensource#documentation-and-license"
 Issues = "https://github.com/astronaut2003/mandol-competition-opensource/issues"
 
 [tool.uv.workspace]
@@ -96,6 +97,8 @@ constraint-dependencies = [
 ]
 
 [tool.setuptools.package-data]
+"mandol_competition.inference" = ["tokenizers/qwen3_embedding/*.json", "tokenizers/qwen3_embedding/*.txt", "tokenizers/qwen35_rerank/*.json", "tokenizers/qwen35_rerank/*.txt"]
+"mandol_competition.config" = ["profiles/*.toml"]
 "mandol_competition.textual" = ["profiles/source_b1_public_v1/*.json", "profiles/aml_official_v4_v1/*.json"]
 
 "mandol_competition.multimodal" = ["profiles/*.json"]

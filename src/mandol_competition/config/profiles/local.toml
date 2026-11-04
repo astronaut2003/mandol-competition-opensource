@@ -1,0 +1,87 @@
+# Frozen T0/C0/M0; topology and resource settings only.
+# Provide your own credentials/endpoints. No production paths or IPs.
+# Local uses MANDOL_LOCAL_* overrides; Cluster uses MANDOL_CLUSTER_*.
+[runtime]
+mode = "local"
+[runtime.api]
+host = "127.0.0.1"
+textual_port = 18080
+code_port = 18081
+multimodal_port = 18082
+startup_timeout = 240
+[runtime.authentication]
+credential_env = "MANDOL_LOCAL_API_KEY"
+[runtime.vlm]
+credential_env = "MANDOL_LOCAL_VLM_KEY"
+[runtime.qdrant]
+credential_env = "MANDOL_LOCAL_QDRANT_KEY"
+[runtime.limits]
+worker_capacity = 4
+max_queue = 16
+queue_timeout = 5
+add_timeout = 1800
+search_timeout = 1800
+[runtime.bindings."querit-4b"]
+model = "Querit/Querit-4B"
+revision = "e557bb5ce6555f16b33dbb7d2ca62e8d27c14c13"
+served_alias = "querit-4b"
+root = "Querit/Querit-4B"
+dtype = "bfloat16"
+vllm_version = "0.29.0"
+[runtime.bindings."BAAI/bge-reranker-v2-m3"]
+model = "BAAI/bge-reranker-v2-m3"
+revision = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+served_alias = "BAAI/bge-reranker-v2-m3"
+root = "BAAI/bge-reranker-v2-m3"
+dtype = "bfloat16"
+vllm_version = "0.25.1"
+[global]
+runtime_root = "data/local"
+qdrant_endpoint = "http://127.0.0.1:19733"
+log_level = "INFO"
+
+[textual]
+reranker_backend = "profile" # Historical local qualification; cloud default has its own deployment template.
+namespace = "mandol-local"
+inference_contract = "aml-official-eligible-v1"
+[textual.inference]
+embedding = "http://127.0.0.1:18087"
+sparse = "http://127.0.0.1:18087"
+reranker = "http://127.0.0.1:18083"
+[textual.reranker_pool]
+endpoints = ["http://127.0.0.1:18083"]
+max_inflight = 4
+max_queue = 8
+queue_timeout = 5
+cooldown = 5
+probe_interval = 10
+probe_timeout = 3
+warmup_timeout = 60
+request_timeout = 1800
+
+[code]
+reranker_backend = "profile" # Preserve this historical no-reranker qualification profile.
+namespace = "mandol-local"
+inference_contract = "aml-official-eligible-v1"
+[code.inference]
+embedding = "http://127.0.0.1:18087"
+
+[multimodal]
+reranker_backend = "profile"
+namespace = "mandol-local"
+inference_contract = "aml-official-eligible-v1"
+[multimodal.inference]
+embedding = "http://127.0.0.1:18087"
+sparse = "http://127.0.0.1:18087"
+reranker = "http://127.0.0.1:18084"
+vlm = "http://127.0.0.1:18085/v1"
+[multimodal.reranker_pool]
+endpoints = ["http://127.0.0.1:18084"]
+max_inflight = 4
+max_queue = 8
+queue_timeout = 5
+cooldown = 5
+probe_interval = 10
+probe_timeout = 3
+warmup_timeout = 60
+request_timeout = 1800

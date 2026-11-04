@@ -45,7 +45,7 @@ class Metrics:
         with self.lock:
             self.count[operation] += 1; self.duration[operation] += duration
             if status >= 400: self.errors[operation] += 1
-    def render(self, state=None, reranker=None, executor=None):
+    def render(self, state=None, reranker=None, executor=None, *, optional_projection_channel="dense"):
         rows = []
         with self.lock:
             for op in sorted(self.count):
@@ -64,7 +64,8 @@ class Metrics:
                 }
                 counts['purge_pending'] += state._rows("SELECT count(*) n FROM projection_frontiers WHERE error_class='PurgePending'")[0]['n']
                 if self.track == 'code':
-                    counts['projection_lag'] = state._rows("SELECT coalesce(sum(max(0,s.published_seq-coalesce(f.published_seq,0))),0) n FROM scopes s LEFT JOIN projection_frontiers f ON f.scope=s.scope AND f.channel='dense'")[0]['n']
+                    counts['projection_lag'] = state._rows("SELECT coalesce(sum(max(0,s.published_seq-coalesce(f.published_seq,0))),0) n FROM scopes s LEFT JOIN projection_frontiers f ON f.scope=s.scope AND f.channel=?",
+                        (optional_projection_channel,))[0]['n']
                 rows += [f'{name}{{track="{self.track}"}} {value}' for name, value in counts.items()]
             except Exception:
                 rows.append(f'metrics_dependency_unavailable{{track="{self.track}"}} 1')
@@ -83,7 +84,7 @@ class Metrics:
         return '\n'.join(rows) + '\n'
 
 
-def install_observability(app, track, *, ready, state=lambda: None):
+def install_observability(app, track, *, ready, state=lambda: None, validation_error_handler=None, exception_status=None):
     metrics = Metrics(track); app.state.metrics = metrics
     logger = logging.getLogger('mandol_competition.requests')
     local_operations = os.getenv('MANDOL_INTERNAL_ENDPOINTS_LOOPBACK_ONLY') == '1'
@@ -101,11 +102,16 @@ def install_observability(app, track, *, ready, state=lambda: None):
                 # and AML Add/Search keep their documented contract/auth.
                 return JSONResponse(status_code=404, content={'detail':'Not Found'})
         operation = {'/add': 'add', '/search': 'search', '/health': 'health', '/livez': 'live', '/readyz': 'ready', '/metrics': 'metrics', '/admin/purge': 'purge'}.get(request.url.path, 'other')
-        correlation = uuid.uuid4().hex; started = time.monotonic(); status = 500
+        context=getattr(request.state,'diagnostic_context',None)
+        correlation = context.correlation_id if context is not None else uuid.uuid4().hex
+        started = time.monotonic(); status = 500
         try:
             response = await call_next(request); status = response.status_code
             response.headers['X-Request-ID'] = correlation
             return response
+        except Exception as exc:
+            if exception_status is not None: status=exception_status(exc)
+            raise
         finally:
             elapsed = time.monotonic() - started
             metrics.observe(operation, elapsed, status)
@@ -113,10 +119,10 @@ def install_observability(app, track, *, ready, state=lambda: None):
                 'duration_seconds': elapsed, 'correlation_id': correlation,
                 'error_class': 'server' if status >= 500 else 'client' if status >= 400 else 'none'})
 
-    @app.exception_handler(RequestValidationError)
     async def invalid(request, exc):
         # Pydantic's default includes the raw input, possibly Base64 or secrets.
         return JSONResponse(status_code=422, content={'detail': {'reason': 'request validation failed'}})
+    app.add_exception_handler(RequestValidationError,validation_error_handler or invalid)
 
     @app.get('/livez', include_in_schema=False)
     def live(): return {'status': 'alive'}
@@ -133,5 +139,6 @@ def install_observability(app, track, *, ready, state=lambda: None):
     def prometheus():
         owner = getattr(app.state, 'memory_service', None) or getattr(app.state, 'backend', None)
         return Response(metrics.render(state(), getattr(owner, 'reranker', None),
-                        getattr(app.state, 'deadline_executor', None)),
+                        getattr(app.state, 'deadline_executor', None),
+                        optional_projection_channel=getattr(owner, 'optional_projection_channel', 'dense')),
                         media_type='text/plain; version=0.0.4')

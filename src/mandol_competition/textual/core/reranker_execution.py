@@ -1,4 +1,4 @@
-"""Frozen Querit pair construction, admission checks and score policy."""
+"""Pinned official Querit execution policy, admitted from the frozen run capsule."""
 
 import copy
 import json

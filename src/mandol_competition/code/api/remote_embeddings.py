@@ -34,7 +34,8 @@ def prepared_dense_query(encoder, text):
     is introduced. The original retrieval path still decides failure policy.
     """
     try:
-        result, error = encoder.encode_query(text), None
+        call = getattr(encoder, "encode_query_pair", encoder.encode_query)
+        result, error = call(text), None
     except Exception as exc:
         result, error = None, exc
     token = _prepared_query.set((encoder, text, result, error))
@@ -93,6 +94,70 @@ class RecipeDenseEncoder:
         return self._encode([text],query=True)[0]
 
     def close(self):self.client.close()
+
+
+class RecipeNativeEncoder(RecipeDenseEncoder):
+    """One HTTP paired request per input; shared native v4 semantic recipes."""
+    def __init__(self, endpoint, *, timeout=60, clients=None):
+        from mandol_competition.inference.clients import (
+            HTTPEmbeddingClient, HTTPSparseEncoderClient, HTTPJointEncoders)
+        from mandol_competition.inference.dashscope import official_embedding_recipes
+        self.recipe, sparse = official_embedding_recipes()
+        self.paired = clients or HTTPJointEncoders(
+            HTTPEmbeddingClient(endpoint, self.recipe, timeout=timeout, batch_size=10, max_attempts=1),
+            HTTPSparseEncoderClient(endpoint, sparse, timeout=timeout, max_attempts=1))
+
+    def validate_profile(self):
+        from mandol_competition.inference.errors import InferenceIdentityError
+        from mandol_substrate.state import ProfileMismatch
+        try:
+            self.paired.dense.validate_profile()
+            self.paired.sparse.validate_profile()
+        except InferenceIdentityError:
+            raise ProfileMismatch("Code native serving recipe mismatch") from None
+        return True
+
+    def embedding_query_policy(self):
+        return (self.paired.embedding_query_policy()
+                if hasattr(self.paired, 'embedding_query_policy') else None)
+
+    def encode_documents(self, texts):
+        self.validate_profile()
+        pairs = []
+        for start in range(0, len(texts), 10):
+            pairs.extend(self.paired.encode_documents(texts[start:start + 10]))
+        self._validate_pairs(pairs, len(texts))
+        return pairs
+
+    @staticmethod
+    def _validate_pairs(pairs, count):
+        from mandol_substrate.vector.codec import validate_vectors
+        if len(pairs) != count:
+            raise EmbeddingError("Partial native paired response")
+        for dense, sparse in pairs:
+            dense, sparse = validate_vectors(dense, sparse, 1024)
+            if not sparse or abs(float(np.linalg.norm(dense)) - 1) > .01:
+                raise EmbeddingError("Invalid native paired normalization or sparse vector")
+
+    def encode(self, texts):
+        return np.asarray([dense for dense, _ in self.encode_documents(texts)], dtype=np.float32)
+
+    def encode_query_pair(self, text):
+        prepared = _prepared_query.get()
+        if prepared is not None and prepared[0] is self and prepared[1] == text:
+            if prepared[3] is not None:
+                raise prepared[3]
+            return prepared[2]
+        self.validate_profile()
+        pair = self.paired.encode_query(text)
+        self._validate_pairs([pair], 1)
+        return np.asarray(pair[0], dtype=np.float32), pair[1]
+
+    def encode_query(self, text):
+        return self.encode_query_pair(text)[0]
+
+    def close(self):
+        self.paired.close()
 
 
 class RemoteDenseEncoder:

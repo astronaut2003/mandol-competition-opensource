@@ -1,74 +1,91 @@
 # Mandol Competition
 
+[Mandol 原项目](https://github.com/AgentCombo/Mandol) · [原始论文](https://arxiv.org/abs/2606.29778) · [Agent Memory Leaderboard](https://agentmemories.ai/)
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Mandol Competition 是面向 Agent Memory Leaderboard（AML）的统一、自托管智能体
-记忆系统，通过共享的持久化存储与检索基础设施支持文本、代码和多模态记忆。
+**本仓库是 Mandol 参加 Agent Memory Leaderboard（AML）的正式参赛版本，覆盖文本（T0）、代码（C0）和多模态（M0）三个赛道。**
 
-## 项目概览
+Mandol 面向需要长期记忆的智能体，研究记忆组织、语义结构与混合检索。本项目沿用其记忆组织与检索设计，提供面向对话历史、工程经验和图文交互的持久化记忆服务：通过 `Add` 写入信息，通过 `Search` 返回相关来源证据。
 
-项目提供三个独立的 Memory API：**Textual T0、Coding C0、Multimodal M0**。
-三个赛道各自维护记忆表示与检索策略，共用 SQLite 持久化、向量发布、请求幂等和
-恢复机制。Add 写入记忆，Search 返回已存储的证据，不直接生成最终答案。
+## 功能
 
-实现基于 [Mandol](https://github.com/AgentCombo/Mandol)。英文 README 是主要维护文档；
-[冻结方法说明](docs/method/Frozen-Pipelines.md)完整描述本项目的参赛实现。
+- **三类记忆服务**：支持对话轮次、仓库工作历史，以及有序的文本和图片消息，使用统一的 Add/Search 接口。
+- **混合检索**：结合词法、Dense、native Sparse 检索，按赛道完成排序与上下文组织。
+- **来源可追溯**：返回记忆 ID、原始文本、会话上下文和图片证据，供后续回答使用。
+- **持久化与请求重放**：SQLite 状态和发布日志协调 Qdrant 投影；重复请求复用同一次逻辑写入。
+- **用户与赛道隔离**：使用独立的命名空间、存储目录和向量集合，按请求用户检索记忆。
+- **推理恢复**：支持输入 Token 预算控制、有界重试和视觉提取检查点，处理长请求与中断后的恢复。
 
-## 主要特性
+## 三个赛道
 
-- **三赛道隔离：**独立 API、SQLite 存储根目录与 Qdrant collection，隔离用户和赛道数据。
-- **可靠写入与恢复：**请求重放、规范化内容冲突检测、向量发布校验和 reconciliation 支持持久化恢复。
-- **赛道专用检索：**文本和多模态使用词法、Dense、原生 Sparse 混合检索；代码使用词法证据与可选 Dense。
-- **多模态记忆：**验证文本/图像输入，通过 VLM 构建表示，并由内容寻址 MediaStore 保存和恢复原始图像。
-- **外部推理服务：**CPU HTTP 客户端与桥接服务连接模型端点，API 环境不加载 GPU 模型。
-- **可复现测试：**确定性推理 fixture 配合真实 SQLite、临时 Qdrant 和 HTTP API，覆盖隔离、故障与恢复。
+| 赛道 | 输入 | 检索与证据 |
+|---|---|---|
+| **文本 · T0** | 对话与跨会话历史 | 来源和上下文检索、混合召回、Qwen 重排、观测顺序标注。 |
+| **代码 · C0** | 工程会话与仓库经验 | 原始历史和 episode，词法/native Sparse/Dense 检索、RRF 融合及可选的 episode 重排。 |
+| **多模态 · M0** | 有序文本与原始图片 | 场景/OCR 提取、混合检索、证据审查，以及带来源的图文返回。 |
 
-## 架构与三赛道差异
+多模态 Search 使用 `source-grounded-recall-v4`。正向或不完整审查保留候选 ID、顺序和分数；返回空结果需要两轮完整证据审查。相关源上下文和原图保留各自的来源标注。详见[方法工作流](docs/method/Current-Workflow.md)。
 
-三个 API 共用 `mandol_substrate`。SQLite 保存规范记忆状态；Qdrant 保存可校验、
-可重建的向量投影与精简元数据；Multimodal 使用独立 MediaStore 保存图像。
-每个赛道运行一个 API worker，外部 Qdrant 的生命周期由部署者管理。
+## 架构
 
-| 赛道 | 冻结检索 | Add 成功条件 | 返回策略 |
-|---|---|---|---|
-| Textual T0 | BM25 + v4 Dense/原生 Sparse，RRF60，Querit B1 重排 | 完成必要的向量发布校验 | 最多 10 条来源/上下文记录，24,000 字符预算 |
-| Coding C0 | 原始历史与工程 episode；词法 + 可选完整 frontier 的 v4 Dense，Dot 相似度 | 规范记忆与词法持久化 | 最多 8 张证据卡，总计 16,000 字符，每来源 1,200 字符 |
-| Multimodal M0 | DM + SGM；BM25 + v4 Dense/原生 Sparse，RRF60，BGE BF16 重排 | 完成 prepare 后必要的向量发布 | 按来源顺序返回文本/图像，遵守上下文和媒体预算 |
-
-返回数量还受请求 `top_k` 限制。T0/M0 使用 1024 维 `text-embedding-v4` 和同一
-Provider 的原生 Sparse；历史 `splade` 字段名不表示需要启动 SPLADE 服务。
-**C0 不使用原生 Sparse 或神经 reranker。** 详细架构图见
-[英文 README](README.md#architecture)，模型及数值约定见
-[推理部署](docs/deployment/Inference.md)。
-
-## 快速安装
-
-使用 Linux、Python 3.12 和 [uv](https://docs.astral.sh/uv/)。在仓库根目录执行：
-
-```bash
-uv sync --frozen --python 3.12.13 --extra all --extra dev
-uv pip install --python .venv/bin/python --no-deps -e services/inference
-python3 deployment/cluster/frozen.py
-.venv/bin/python -m pytest tests/common/test_neutral_contracts.py tests/common/test_retrieval_primitives.py -q
+```mermaid
+flowchart LR
+    A[Add] --> C[SQLite 记忆与发布日志]
+    C --> I[词法索引与 Qdrant]
+    S[Search] --> H[用户作用域内的混合检索]
+    C --> H
+    I --> H
+    H --> R[赛道重排与证据选择]
+    R --> E[来源文本与图片证据]
 ```
 
-这会安装应用、仓库内的 substrate 包和 CPU HTTP 桥接服务，不会安装 GPU 模型
-服务器或下载权重。单赛道安装可将 `--extra all` 换成 `--extra textual`、
-`--extra code` 或 `--extra multimodal`；完整测试需要三赛道 extras 与 `--extra dev`。
+`mandol_substrate` 负责规范状态、请求身份、发布和恢复，赛道适配器负责记忆表示与检索策略。多模态原图保存在 MediaStore 中，由记忆记录引用。
 
-## 部署与配置
+默认模型配置如下：
 
-按照 [本地部署指南](docs/deployment/Local-Reproduction.md)准备 Qdrant **1.19.1**、
-v4 Provider 桥接、Querit/BGE reranker 和授权的 GPT-4o-mini 兼容服务。
-API 环境锁定的 Qdrant 客户端为 **1.19.0**，reranker 的冻结精度为 **BF16**。
-C0 的 Dense 通道可降级为词法检索。
+| 组件 | 模型 |
+|---|---|
+| Embedding | `text-embedding-v4`，联合提供 Dense/native Sparse 输出 |
+| Reranker | `qwen3.7-text-rerank` |
+| 视觉提取与证据选择 | `gpt-4o-mini` |
 
-复制并编辑 [部署模板](configs/deployment/frozen-bf16.example.toml) 和
-[模型绑定模板](configs/deployment/serving-bindings.example.json)，通过环境变量或
-支持的 secret mount 注入凭据。`.env.example` 仅列出变量名，不会自动加载。
-TOML 不展开 shell 变量；模板中的 VLM URL 必须替换为自己的授权端点。
+API 和 Embedding Bridge 使用 CPU 运行，推理由配置的模型服务提供。模型接口和输入预算见[推理服务说明](docs/deployment/Inference.md)。
 
-配置完成后，在不同终端启动三个赛道：
+## 安装
+
+环境要求：**Linux、Python 3.12、uv 和 Qdrant 1.19.1**。Qdrant 可通过 Docker 运行。
+
+```bash
+git clone https://github.com/astronaut2003/mandol-competition-opensource.git
+cd mandol-competition-opensource
+uv sync --frozen --python 3.12.13 --extra all --extra dev
+uv pip install --python .venv/bin/python --no-deps -e services/inference
+
+mkdir -p configs/local
+cp configs/deployment/current-cloud.example.toml configs/local/deployment.toml
+```
+
+在 `configs/local/deployment.toml` 中设置模型服务地址，并按 [.env.example](.env.example) 配置环境变量：
+
+| 变量 | 用途 |
+|---|---|
+| `MANDOL_MEMORY_SYSTEM_KEY` | 记忆 API 鉴权 |
+| `DASHSCOPE_API_KEY` | Embedding Bridge 与 Qwen 重排 |
+| `CLOSEAI_API_KEY` | 默认 VLM 凭据变量，可通过 `MANDOL_MM_VLM_API_KEY_ENV` 指定其他变量名 |
+
+Qdrant 启动、VLM 地址配置和共享模型配额设置见[本地部署](docs/deployment/Local-Reproduction.md)。
+
+## 启动服务
+
+先启动 Embedding Bridge：
+
+```bash
+.venv/bin/python -m uvicorn mandol_inference.dashscope_bridge:create_app \
+  --factory --host 127.0.0.1 --port 18620 --workers 1 --no-access-log
+```
+
+再在不同终端分别启动三个赛道：
 
 ```bash
 .venv/bin/python scripts/start_api.py textual --config configs/local/deployment.toml
@@ -76,63 +93,53 @@ TOML 不展开 shell 变量；模板中的 VLM URL 必须替换为自己的授�
 .venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml
 ```
 
-默认仅监听 loopback，端口分别为 **18600 / 18601 / 18602**。远程访问使用 HTTPS，
-Qdrant、推理和运维端点保持私有。凭据处理和存储保护见 [安全说明](SECURITY.md)。
+默认 API 端口依次为 **18600、18601、18602**。每赛道使用一个 worker，支持 8 个执行中请求和 8 个等待请求。启动器在启动前校验所选方法的配置和文件摘要。
 
-## API 使用
+## 写入与检索
 
-三个赛道提供相同的 `GET /health`、`POST /add` 和 `POST /search` 入口，通过端口
-选择赛道。认证支持 `Authorization: Bearer`、`Authorization: Token` 或 `X-Api-Key`。
-
-在已导出自己的 `MANDOL_MEMORY_SYSTEM_KEY` 后，可调用 Textual API：
+启动文本 API 并设置 `MANDOL_MEMORY_SYSTEM_KEY` 后：
 
 ```bash
-curl -sS http://127.0.0.1:18600/health
 curl -sS http://127.0.0.1:18600/add \
   -H "Authorization: Bearer ${MANDOL_MEMORY_SYSTEM_KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"request_id":"example-1","user_id":"example-user","session_id":"session-1","messages":[{"role":"user","content":"I prefer coffee without sugar."}]}'
+  -d '{"request_id":"demo-1","user_id":"demo-user","session_id":"project-notes","messages":[{"role":"user","content":"The service uses PostgreSQL 16."}]}'
+
 curl -sS http://127.0.0.1:18600/search \
   -H "Authorization: Bearer ${MANDOL_MEMORY_SYSTEM_KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"query":"What is my coffee preference?","user_id":"example-user","top_k":100}'
+  -d '{"query":"Which database does the service use?","user_id":"demo-user","top_k":100}'
 ```
 
-Add 成功返回请求、用户与 session 标识；相同请求和规范内容会重放同一逻辑结果，
-内容改变则冲突。Search 返回 `{"data": [...]}`，允许为空，按用户跨 session 检索，
-不同赛道物理隔离。多模态支持有序文本/图像片段。
-完整 Schema、响应示例和图像限制见 [API 文档](docs/API.md)。
+Search 返回 `{"data": [...]}`，包含记忆 ID、内容与排序分数。代码和多模态服务在各自端口使用相同接口路径。图片输入、options、请求重放和错误语义见 [API 文档](docs/API.md)。
 
 ## 测试与复现
 
-上面的快速测试无需模型凭据。完整存储与 HTTP 回归使用带所有权标签的全新临时
-Qdrant，通过 `scripts/run_tests.py` 运行；命令见
-[英文 README](README.md#testing-and-reproduction) 和 [复现指南](docs/Reproduction.md)。
-不要把测试连接到生产数据库。
+校验方法文件并运行一组本地回归：
 
-合成推理测试验证接口、存储和故障行为，不代表真实模型端到端质量或官方 AML
-成绩。真实模型测试需要自己的合法模型服务、硬件、凭据和新存储，并显式启用。
-离线 QA 可单独获取校验固定 Commit 的上游评测脚本；脚本、数据集与模型权重不随
-本项目分发。具体依赖与评测边界见 [复现指南](docs/Reproduction.md)。
+```bash
+.venv/bin/python deployment/cluster/frozen.py
+.venv/bin/python -m pytest tests/common/test_neutral_contracts.py \
+  tests/common/test_retrieval_primitives.py -q
+```
 
-## 文档导航
+完整回归使用确定性推理桩，覆盖 SQLite/Qdrant 发布、HTTP 协议、排序、隔离和恢复。隔离测试运行器及真实模型集成测试的使用方式见[测试与复现](docs/Reproduction.md)。
 
-- [冻结 T0/C0/M0 方法](docs/method/Frozen-Pipelines.md)
-- [本地部署与故障排查](docs/deployment/Local-Reproduction.md)
-- [推理服务与模型配置](docs/deployment/Inference.md)
-- [API 文档](docs/API.md)
-- [测试与复现](docs/Reproduction.md)
-- [来源署名](docs/ATTRIBUTION.md) 与 [依赖许可证](docs/Dependency-Licenses.md)
-- [安全说明](SECURITY.md) 与 [贡献指南](CONTRIBUTING.md)
+## 文档与许可证
 
-## 许可证与来源
+| 文档 | 内容 |
+|---|---|
+| [方法工作流](docs/method/Current-Workflow.md) | 赛道策略、视觉提取、证据审查与分数融合 |
+| [本地部署](docs/deployment/Local-Reproduction.md) | 服务、配置、存储与模型配额控制 |
+| [推理服务](docs/deployment/Inference.md) | 模型协议、Token 预算与恢复 |
+| [API 文档](docs/API.md) | 请求、响应、鉴权与重放 |
+| [方法配置](docs/method/Frozen-Pipelines.md) | 版本化配置与源码完整性 |
+| [测试与复现](docs/Reproduction.md) | 回归和集成测试 |
 
-Mandol Competition 及其统一参赛实现按 [Apache-2.0](LICENSE) 分发。
-原始 Mandol 的版权与署名保留在 [NOTICE](NOTICE) 和
-[Attribution](docs/ATTRIBUTION.md)。独立第三方依赖、模型、服务、数据集及自行获取
-的评测脚本适用各自条款；本项目不分发模型权重或数据集。
+欢迎贡献代码，开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。项目采用 [Apache-2.0](LICENSE) 许可证，Mandol 原项目的署名保留在 [NOTICE](NOTICE) 和[来源声明](docs/ATTRIBUTION.md)中。第三方组件遵循各自条款，见[依赖许可证](docs/Dependency-Licenses.md)。
 
-原始设计参考论文
-[Mandol: An Agglomerative Agent Memory System for Long-Term Conversations](https://arxiv.org/abs/2606.29778)，
-作者为 Yuhan Zhang、Zhiyuan Guo、Ziheng Zeng、Wei Wang、Wentao Wu、Lijie Xu。
-本仓库描述统一参赛实现，论文和官方榜单结果分别对应各自评测版本。
+## AML 比赛评测与合规
+
+本系统按照 [AML 官方赛事规则](https://agentmemories.ai/competition/)组织正式参赛测试。默认配置使用 `text-embedding-v4` 完成 Embedding，使用 `gpt-4o-mini` 完成 LLM 相关处理，并使用 `qwen3.7-text-rerank` 重排，符合学术榜的模型使用要求。
+
+正式比赛测试采用 AML 的 Add/Search 协议和官方 Smoke/Full 流程。本系统提供用户作用域内的记忆证据，由 AML 统一完成 Answer、Eval 和结果复核。参赛代码、配置与提交版本共同标识受测系统，正式成绩由 AML 完成复核后发布。

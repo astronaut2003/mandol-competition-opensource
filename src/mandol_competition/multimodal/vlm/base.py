@@ -126,6 +126,12 @@ def _parse_relations(value: Any) -> list[Relation]:
     return relations
 
 
+def has_visual_evidence(extraction: Extraction) -> bool:
+    return any((extraction.description, extraction.ocr_text, extraction.entities,
+                extraction.objects, extraction.events, extraction.relations,
+                extraction.tags, extraction.location_hint))
+
+
 def parse_extraction(
     payload: object, *, model: str, prompt_version: str, schema_version: str
 ) -> Extraction:

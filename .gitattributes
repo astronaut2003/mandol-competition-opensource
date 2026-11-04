@@ -1,0 +1,6 @@
+* text=auto eol=lf
+src/mandol_competition/inference/tokenizers/** -text
+src/mandol_competition/inference/tokenizers/**/tokenizer.json -diff
+*.png binary
+*.jpg binary
+*.jpeg binary

@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from .config import Settings
 from .coding_memory import CodingMemoryService
@@ -19,6 +18,11 @@ from .security import require_auth
 from .version import __version__
 from .body_limit import BodyLimitMiddleware
 from .coding_store import CapacityExceeded, RequestConflict, StorageBusy
+from .coding_store import PreparationBudgetExceeded
+from mandol_competition.runtime.contract import SearchPlan,acknowledge_add
+from mandol_competition.runtime.http_boundary import install_http_boundary,ErrorRule
+from mandol_competition.runtime.deadline import add_work_key
+from mandol_competition.observability.diagnostics import diagnostic_call
 
 logger = logging.getLogger("mandol_competition.code.api.app")
 
@@ -82,7 +86,9 @@ def create_app(settings: Optional[Settings] = None, *, memory_service=None) -> F
             # it and initialization before closing canonical/projection clients.
             deadlines.close()
             init_thread.join()
-            if ready_event_holder["started"] and memory.ready:
+            # Startup can open SQLite/HTTP before model admission fails. Those
+            # resources still belong to this lifespan even when never ready.
+            if ready_event_holder["started"]:
                 try:
                     memory.shutdown()
                 except Exception:
@@ -100,19 +106,6 @@ def create_app(settings: Optional[Settings] = None, *, memory_service=None) -> F
 
     app.add_middleware(BodyLimitMiddleware, max_bytes=cfg.max_request_bytes)
     app.state.deadline_executor = deadlines
-
-    @app.exception_handler(RequestConflict)
-    async def request_conflict_handler(request: Request, exc: RequestConflict):
-        return JSONResponse(status_code=409, content={"detail": {"reason": str(exc)}})
-
-    @app.exception_handler(StorageBusy)
-    async def storage_busy_handler(request: Request, exc: StorageBusy):
-        return JSONResponse(status_code=503, headers={"Retry-After": "1"},
-                            content={"detail": {"reason": str(exc)}})
-
-    @app.exception_handler(CapacityExceeded)
-    async def capacity_handler(request: Request, exc: CapacityExceeded):
-        return JSONResponse(status_code=507, content={"detail": {"reason": str(exc)}})
 
     @app.get(cfg.health_path, include_in_schema=False)
     def health() -> Dict[str, Any]:
@@ -144,19 +137,13 @@ def create_app(settings: Optional[Settings] = None, *, memory_service=None) -> F
             raise _rate_limited()
         if not ready_event_holder["ready"] or not memory.ready:
             raise _not_ready()
-        deadlines.run(lambda: memory.add_messages(
+        count=deadlines.run(lambda: diagnostic_call('add',memory.add_messages,
             user_id=payload.user_id,
             session_id=payload.session_id,
             request_id=payload.request_id,
-            messages=[m.model_dump() for m in payload.messages],
-        ), seconds=cfg.add_timeout_seconds)
-        # Echo the exact identifiers received (contract requirement).
-        return AddResponse(
-            success=True,
-            request_id=payload.request_id,
-            user_id=payload.user_id,
-            session_id=payload.session_id,
-        )
+            messages=[m.memory_message() for m in payload.messages],
+        ), seconds=cfg.add_timeout_seconds, key=add_work_key('code', payload))
+        return diagnostic_call('add_receipt',acknowledge_add,payload,count,AddResponse)
 
     @app.post(cfg.search_path, response_model=SearchResponse, response_model_exclude_none=True)
     def search(payload: SearchRequest, request: Request) -> SearchResponse:
@@ -165,31 +152,17 @@ def create_app(settings: Optional[Settings] = None, *, memory_service=None) -> F
             raise _rate_limited()
         if not ready_event_holder["ready"] or not memory.ready:
             raise _not_ready()
-        hits = deadlines.run(lambda: memory.search(
+        plan=SearchPlan(payload.top_k)
+        hits = deadlines.run(lambda: diagnostic_call('search',memory.search,
             user_id=payload.user_id,
-            query=payload.query,
+            query=payload.query_text(),
             top_k=payload.top_k,
         ), seconds=cfg.search_timeout_seconds)
-        data = [
-            {
-                "id": hit["id"],
-                "content": hit["content"],
-                "score": hit["score"],
-                "created_at": hit["created_at"],
-            }
-            for hit in hits
-        ]
-        return SearchResponse(data=data)
-
-    @app.exception_handler(Exception)
-    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-        logger.error("unhandled %s on %s", type(exc).__name__, request.method)
-        return JSONResponse(
-            status_code=500,
-            content={"detail": {"reason": "internal server error"}},
-        )
+        return diagnostic_call('response',plan.response,hits,SearchResponse)
 
     app.state.memory_service = memory
-    from mandol_competition.observability.runtime import install_observability
-    install_observability(app, "code", ready=health, state=lambda: getattr(getattr(memory, "store", None), "state", None))
+    install_http_boundary(app,'code',ready=health,state=lambda:getattr(getattr(memory,'store',None),'state',None),
+        rules=(ErrorRule(StorageBusy,503,'storage unavailable; retry the same request',{'Retry-After':'1'}),
+               ErrorRule(PreparationBudgetExceeded,413,'service request memory budget exceeded'),
+               ErrorRule(CapacityExceeded,507,'service storage capacity exceeded')))
     return app

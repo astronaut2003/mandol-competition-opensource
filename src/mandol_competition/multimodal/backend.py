@@ -68,10 +68,25 @@ class MultimodalBackend:
         if not maintenance and (config.data_dir / "canonical.sqlite3").exists() and not (config.data_dir / "state.sqlite3").exists():
             raise ConfigurationError("legacy canonical.sqlite3 exists; run explicit import-legacy before serving")
         self.profile = profile or load_profile(config)
+        from .search_profiles import descriptor, identity
+        self.search_profile = descriptor(self.profile, config.search_policy, config.evidence_policy)
+        self.search_profile_hash = identity(self.profile, config.search_policy, config.evidence_policy)
         from .episodes import quality_policy
         self.visual_policy = quality_policy(self.profile)
         self.fault = fault or (lambda point: None)
         self.encoders = encoders or remote_encoders(config, self.profile)
+        query_policy = (self.encoders.embedding_query_policy()
+                        if hasattr(self.encoders, 'embedding_query_policy') else None)
+        if query_policy is not None:
+            from mandol_substrate.state.models import digest
+            self.search_profile = dict(self.search_profile, embedding_query_policy=query_policy)
+            self.search_profile_hash = digest(self.search_profile)
+        from .search_profiles import QWEN37
+        if config.search_policy == QWEN37:
+            from mandol_competition.inference.rerank_query_views import descriptor as rerank_descriptor
+            from mandol_substrate.state.models import digest
+            self.search_profile=dict(self.search_profile,reranker_query_policy=rerank_descriptor())
+            self.search_profile_hash=digest(self.search_profile)
         self.reranker = reranker
         if self.reranker is None and config.rerank_method is not None:
             self.reranker = remote_reranker(config, self.profile)
@@ -105,6 +120,9 @@ class MultimodalBackend:
         return Scope(self.config.namespace, user_id)
 
     def start(self):
+        pending = self.config.data_dir / ".ocr-field-maintenance.pending"
+        if pending.exists() or pending.is_symlink():
+            raise StateUnavailable("OCR field maintenance has not completed independent verification")
         with self._start_lock:
             if self._closed:
                 raise StateUnavailable("retrieval backend is closed")

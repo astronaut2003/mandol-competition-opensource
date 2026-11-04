@@ -1,8 +1,9 @@
 """Explicit Textual query/output candidates over the unchanged frozen substrate.
 
-Default startup still admits the byte-identical source_b1 capsule. An opt-in
-candidate can only change query and response policies; model recipes, physical
-profile, SQLite owner and projection identity remain bound to that capsule.
+Startup retains the byte-identical storage/quality capsule. The v4 default
+selects the separately versioned, user-approved observation-order output view.
+Explicit research candidates remain independent; model recipes, physical
+profile, SQLite owner and projection identity stay bound to the base capsule.
 """
 import json
 import os
@@ -38,8 +39,10 @@ def bind_candidate(root, path, *, capsule, profile, baseline_sha256):
         fields.add("evidence_packaging_policy")
     if schema == "mandol-textual-quality-candidate-v4":
         fields.add("answer_utility_policy")
+    if schema == "mandol-textual-quality-candidate-v5":
+        fields.add("observation_order_policy")
     if (set(value) != fields
-        or schema not in {"mandol-textual-quality-candidate-v1", "mandol-textual-quality-candidate-v2", "mandol-textual-quality-candidate-v3", "mandol-textual-quality-candidate-v4"}
+        or schema not in {"mandol-textual-quality-candidate-v1", "mandol-textual-quality-candidate-v2", "mandol-textual-quality-candidate-v3", "mandol-textual-quality-candidate-v4", "mandol-textual-quality-candidate-v5"}
         or not isinstance(value["profile_id"], str)
         or re.fullmatch(r"[a-z][a-z0-9_-]{3,95}", value["profile_id"]) is None
         or value["baseline_quality_sha256"] != baseline_sha256
@@ -63,6 +66,11 @@ def bind_candidate(root, path, *, capsule, profile, baseline_sha256):
         if not isinstance(value["answer_utility_policy"],dict):
             raise ProfileMismatch("Explicit existing-evidence selection policy required")
         AnswerUtilityPolicy(**value["answer_utility_policy"])
+    if schema == "mandol-textual-quality-candidate-v5":
+        from .observation_order import ObservationOrderPolicy
+        if not isinstance(value["observation_order_policy"], dict):
+            raise ProfileMismatch("Explicit observation-order policy required")
+        ObservationOrderPolicy(**value["observation_order_policy"])
     policies = dict(capsule["policies"])
     for name, override in value["overrides"].items():
         if not isinstance(override, dict) or "storage_profile_hash" in override:
@@ -79,6 +87,13 @@ def bind_candidate(root, path, *, capsule, profile, baseline_sha256):
         else:
             ReturnPolicy(**data).validate(profile)
         policies[name] = json.dumps(data, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    if schema == "mandol-textual-quality-candidate-v5" and any(
+            json.loads(policies[name]) != json.loads(capsule["policies"][name]) for name in policies):
+        raise ProfileMismatch("Observation-order candidate must retain every baseline retrieval/output policy")
+    if schema == "mandol-textual-quality-candidate-v5":
+        # Keep even the original policy serialization; a metadata-only
+        # candidate has no reason to manufacture new frozen-policy bytes.
+        policies = dict(capsule["policies"])
     # Never overwrite quality-profile.json or quality-policies.json. A changed
     # experiment ID/config gets an independent, checksum-checked policy cache.
     candidate_capsule = {"format": "explicit-candidate-v1", "baseline_capsule": digest(capsule),
@@ -114,4 +129,7 @@ def bind_candidate(root, path, *, capsule, profile, baseline_sha256):
     if schema == "mandol-textual-quality-candidate-v4":
         metadata["answer_utility_policy"]=value["answer_utility_policy"]
         metadata["answer_utility_policy_hash"]=AnswerUtilityPolicy(**value["answer_utility_policy"]).hash
+    if schema == "mandol-textual-quality-candidate-v5":
+        metadata["observation_order_policy"] = value["observation_order_policy"]
+        metadata["observation_order_policy_hash"] = ObservationOrderPolicy(**value["observation_order_policy"]).hash
     return paths, metadata

@@ -1,0 +1,10 @@
+Qwen3-Embedding tokenizer assets
+Copyright Qwen Team / Alibaba Cloud and its affiliates.
+Source: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+Revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+Model card license: Apache-2.0. See LICENSE.txt.
+
+Only tokenizer.json and tokenizer_config.json are bundled, without model weights.
+The provider has not attested that text-embedding-v4 uses this exact revision.
+Compatibility is based on owned synthetic text and provider usage metadata.
+No evaluation questions, answers, IDs or sample-specific behavior are included.

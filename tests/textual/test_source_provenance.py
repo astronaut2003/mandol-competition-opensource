@@ -1,6 +1,5 @@
 import hashlib
 from pathlib import Path
-import subprocess
 from mandol_substrate.provenance import qualified_source_hash
 from mandol_competition.textual.core import context_render
 from mandol_competition.textual.core.context_policy import renderer_hash

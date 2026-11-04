@@ -44,15 +44,15 @@ def test_bf16_admission_does_not_relax_other_invalid_probabilities(values):
 @pytest.mark.parametrize(
     "url",
     [
-        "https://8.8.8.8",
-        "http://8.8.8.8",
+        "https://203.0.113.10",
+        "http://203.0.113.10",
         "http://example.com",
         "http://127.0.0.1",
-        "http://u:p@10.77.0.6",
-        "http://10.77.0.6?key=x",
-        "http://10.77.0.6/v1",
+        "http://u:p@10.0.0.11",
+        "http://10.0.0.11?key=x",
+        "http://10.0.0.11/v1",
         None,
-        "http://10.77.0.6#x",
+        "http://10.0.0.11#x",
     ],
 )
 def test_private_admission(url):
@@ -85,7 +85,7 @@ def test_dense_invalid_vectors_fail_closed(bad):
             200, content=json.dumps(reply(RemoteDenseClient.alias, [bad], "embedding"))
         )
     )
-    client = RemoteDenseClient("http://10.77.0.6:8001", DENSE, transport=transport)
+    client = RemoteDenseClient("http://10.0.0.11:8001", DENSE, transport=transport)
     try:
         with pytest.raises(StateUnavailable):
             client.embed(["text"])
@@ -104,7 +104,7 @@ def test_dense_invalid_vectors_fail_closed(bad):
 )
 def test_malformed_dense_batch(rows):
     client = RemoteDenseClient(
-        "http://10.77.0.6:8001",
+        "http://10.0.0.11:8001",
         DENSE,
         transport=httpx.MockTransport(
             lambda _: httpx.Response(
@@ -136,7 +136,7 @@ def test_dense_order_normalization_and_timeout():
         )
 
     client = RemoteDenseClient(
-        "http://10.77.0.6:8001", DENSE, transport=httpx.MockTransport(serve)
+        "http://10.0.0.11:8001", DENSE, transport=httpx.MockTransport(serve)
     )
     try:
         vectors = client.embed(["first", "second"])
@@ -149,7 +149,7 @@ def test_dense_order_normalization_and_timeout():
         raise httpx.ReadTimeout("upstream failed")
 
     client = RemoteDenseClient(
-        "http://10.77.0.6:8001", DENSE, transport=httpx.MockTransport(timeout)
+        "http://10.0.0.11:8001", DENSE, transport=httpx.MockTransport(timeout)
     )
     try:
         with pytest.raises(StateUnavailable, match="ReadTimeout"):
@@ -169,7 +169,7 @@ def test_splade_documents_queries_and_positive_coordinates():
         return httpx.Response(200, json=reply("splade-v3", [values], "data"))
 
     client = RemoteSpladeClient(
-        "http://10.77.0.6:8002", transport=httpx.MockTransport(serve)
+        "http://10.0.0.11:8002", transport=httpx.MockTransport(serve)
     )
     try:
         assert client.encode_documents(["first", "second"]) == [{3: 2.5}, {30521: 2.5}]
@@ -251,7 +251,7 @@ def test_official_preparation_b1_order_score_and_identity():
         )
 
     client = RemoteQueritClient(
-        "http://10.77.0.15:8003",
+        "http://10.0.0.13:8003",
         expected_profile(batch_size=1),
         transport=httpx.MockTransport(serve),
     )
@@ -267,7 +267,7 @@ def test_official_preparation_b1_order_score_and_identity():
     finally:
         client.close()
     with pytest.raises(ProfileMismatch):
-        RemoteQueritClient("http://10.77.0.15:8003", expected_profile(batch_size=8))
+        RemoteQueritClient("http://10.0.0.13:8003", expected_profile(batch_size=8))
 
 
 @pytest.mark.parametrize(
@@ -302,7 +302,7 @@ def test_admission_never_accepts_unexpected_server(fault):
         return httpx.Response(200, json={"paths": {}})
 
     client = RemoteDenseClient(
-        "http://10.77.0.6:8001", DENSE, transport=httpx.MockTransport(serve)
+        "http://10.0.0.11:8001", DENSE, transport=httpx.MockTransport(serve)
     )
     try:
         with pytest.raises(StateUnavailable):

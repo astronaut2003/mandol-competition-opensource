@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start a formal frozen API against explicitly configured external services."""
+"""Start one reviewed current-workflow API against configured external services."""
 import argparse
 import os
 from pathlib import Path
@@ -25,8 +25,12 @@ def validate_frozen_environment():
     fixed = {
         'MANDOL_MM_VLM_MODEL': 'gpt-4o-mini-closeai',
         'MANDOL_MM_VLM_REQUEST_MODEL': 'gpt-4o-mini',
-        'MANDOL_MM_PROMPT_VERSION': 'multimodal_sgm_v1',
+        'MANDOL_MM_PROMPT_VERSION': 'multimodal_sgm_v3_ocr_lines',
         'MANDOL_MM_SCHEMA_VERSION': '1',
+        'MANDOL_MM_EVIDENCE_POLICY': 'source-grounded-recall-v4',
+        'MANDOL_MM_VISION_FAILURE_POLICY': 'retry-required-v1',
+        'MANDOL_MM_VLM_OUTPUT_TOKENS': '1024',
+        'MANDOL_MM_VLM_MAX_OUTPUT_TOKENS': '1024',
     }
     if any(os.getenv(name, expected) != expected for name, expected in fixed.items()):
         raise ValueError('Frozen VLM model/prompt/schema override refused')
@@ -40,7 +44,7 @@ def validate_frozen_environment():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('track', choices=('textual', 'code', 'multimodal'))
-    p.add_argument('--config', type=Path, default=ROOT/'configs/deployment/frozen-bf16.example.toml')
+    p.add_argument('--config', type=Path, default=ROOT/'configs/deployment/current-cloud.example.toml')
     p.add_argument('--port', type=int)
     a = p.parse_args()
     validate_frozen_environment()
@@ -53,11 +57,17 @@ def main():
     os.environ.setdefault('MANDOL_MM_VLM_MODEL', 'gpt-4o-mini-closeai')
     os.environ.setdefault('MANDOL_MM_VLM_REQUEST_MODEL', 'gpt-4o-mini')
     os.environ.setdefault('MANDOL_MM_VLM_API_KEY_ENV', 'CLOSEAI_API_KEY')
+    os.environ.setdefault('MANDOL_MM_PROMPT_VERSION', 'multimodal_sgm_v3_ocr_lines')
+    os.environ.setdefault('MANDOL_MM_SCHEMA_VERSION', '1')
+    os.environ.setdefault('MANDOL_MM_VLM_OUTPUT_TOKENS', '1024')
+    os.environ.setdefault('MANDOL_MM_VLM_MAX_OUTPUT_TOKENS', '1024')
+    os.environ.setdefault('MANDOL_MM_EVIDENCE_POLICY', 'source-grounded-recall-v4')
+    os.environ.setdefault('MANDOL_MM_VISION_FAILURE_POLICY', 'retry-required-v1')
     os.environ.setdefault('MANDOL_INTERNAL_ENDPOINTS_LOOPBACK_ONLY', '1')
     # Original deployment deadlines/admission capacities, independent of quality.
-    for key,value in {'AML_ADD_TIMEOUT_SECONDS':'1800','AML_SEARCH_TIMEOUT_SECONDS':'1800',
-      'MANDOL_MM_ADD_TIMEOUT_SECONDS':'1800','MANDOL_MM_SEARCH_TIMEOUT_SECONDS':'1800',
-      'MANDOL_API_WORKER_CAPACITY':'16','MANDOL_API_MAX_QUEUE':'16',
+    for key,value in {'AML_ADD_TIMEOUT_SECONDS':'1740','AML_SEARCH_TIMEOUT_SECONDS':'1740',
+      'MANDOL_MM_ADD_TIMEOUT_SECONDS':'1740','MANDOL_MM_SEARCH_TIMEOUT_SECONDS':'1740',
+      'MANDOL_API_WORKER_CAPACITY':'8','MANDOL_API_MAX_QUEUE':'8',
       'MANDOL_API_QUEUE_TIMEOUT_SECONDS':'5'}.items():os.environ.setdefault(key,value)
     from mandol_competition.config import load_config
     settings = load_config()
@@ -68,6 +78,6 @@ def main():
     import uvicorn
     uvicorn.run('mandol_competition.runtime.apps:'+a.track, factory=True,
         host='127.0.0.1', port=port, workers=1, access_log=False,
-        timeout_keep_alive=30, limit_concurrency=64, timeout_graceful_shutdown=90)
+        timeout_keep_alive=30, limit_concurrency=64, timeout_graceful_shutdown=1820)
 
 if __name__ == '__main__':main()

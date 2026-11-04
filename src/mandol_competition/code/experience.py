@@ -68,16 +68,20 @@ class ExperienceBuilder:
         if self.http is None:
             from mandol_competition.inference.vlm import HTTPVLMClient
             endpoint = os.environ.get('MANDOL_CODE_LLM_BASE_URL')
-            key = os.environ.get(os.environ.get('MANDOL_CODE_LLM_API_KEY_ENV', 'CLOSEAI_API_KEY'))
+            credential_env = os.environ.get('MANDOL_CODE_LLM_API_KEY_ENV', 'CLOSEAI_API_KEY')
             wire = os.environ.get('MANDOL_CODE_LLM_REQUEST_MODEL', 'gpt-4o-mini')
-            if not endpoint or not key or wire not in ('gpt-4o-mini','gpt-4o-mini-closeai'):
+            from mandol_competition.inference.generation import generation_route
+            route = generation_route(endpoint, wire, credential_env=credential_env)
+            key = route.key()
+            if not route.endpoint or wire not in ('gpt-4o-mini','gpt-4o-mini-closeai','openai/gpt-4o-mini'):
                 raise ValueError('Explicit mini endpoint/credential/wire mapping required')
-            self.http = HTTPVLMClient(endpoint, wire, api_key=key, timeout=90)
+            self.http = HTTPVLMClient(route.endpoint, route.model, api_key=key, timeout=90)
         result = self.http.complete([
             {'role':'system','content':prepared['instruction']},
             {'role':'user','content':json.dumps({k:v for k,v in prepared.items() if k!='instruction'}, ensure_ascii=False)}],
             request_id=request_id, response_format={'type':'json_object'}, temperature=0, max_tokens=1800)
-        if result.get('model') not in ('gpt-4o-mini','gpt-4o-mini-closeai','gpt-4o-mini-2024-07-18'):
+        from mandol_competition.inference.generation import is_mini_response
+        if not is_mini_response(result.get('model')):
             raise ValueError('Unapproved generative model identity')
         choice = result['choices'][0]
         if choice.get('finish_reason') != 'stop':
@@ -86,6 +90,7 @@ class ExperienceBuilder:
         def reject_constant(value): raise ValueError('Non-finite generated JSON')
         payload = json.loads(text, parse_constant=reject_constant)
         return payload, {'logical_model':'gpt-4o-mini-closeai','request_model':self.http.model,
+                         'transport_provider':self.http.route.provider,
                          'response_model':result['model'],'usage':result.get('usage',{}),
                          'prompt_sha256':digest(INSTRUCTION), 'recipe_fingerprint':FINGERPRINT}
 

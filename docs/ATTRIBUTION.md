@@ -40,10 +40,20 @@ must also be obtained separately under their own terms.
 
 ## Models and services
 
+The competition configuration uses these model services:
+
+| Component | Model | Terms |
+|---|---|---|
+| Embedding | `text-embedding-v4` | Provider service terms |
+| Reranking | `qwen3.7-text-rerank` | Provider service terms |
+| Visual extraction and evidence selection | `gpt-4o-mini` | Configured service's terms |
+
+### Historical model adapters
+
 | Component | Reference | Terms and distribution scope |
 |---|---|---|
-| Textual reranker | [Querit/Querit-4B](https://huggingface.co/Querit/Querit-4B), revision `e557bb5ce6555f16b33dbb7d2ca62e8d27c14c13` | Obtain permitted artifacts for the pinned revision; weights are not bundled. Check the applicable revision's terms. |
-| Multimodal reranker | [BAAI/bge-reranker-v2-m3 pinned card](https://huggingface.co/BAAI/bge-reranker-v2-m3/blob/953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e/README.md) | Model card declares Apache-2.0; weights are not bundled. |
+| Querit adapter | [Querit/Querit-4B](https://huggingface.co/Querit/Querit-4B), revision `e557bb5ce6555f16b33dbb7d2ca62e8d27c14c13` | Obtain permitted artifacts for the pinned revision; weights are not bundled. Check the applicable revision's terms. |
+| BGE adapter | [BAAI/bge-reranker-v2-m3 pinned card](https://huggingface.co/BAAI/bge-reranker-v2-m3/blob/953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e/README.md) | Model card declares Apache-2.0; weights are not bundled. |
 | Embedding | Provider `text-embedding-v4` | Provider service terms; a model alias does not grant rights to provider weights. |
 | VLM | Logical `gpt-4o-mini-closeai`, wire model `gpt-4o-mini` | External OpenAI-compatible service terms; no provider model files are bundled. |
 

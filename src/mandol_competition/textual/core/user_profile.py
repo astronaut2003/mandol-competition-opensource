@@ -313,9 +313,10 @@ def validate_items(raw, sources, recipe):
 
 
 def checked_response(record):
+    from mandol_competition.inference.generation import is_mini_response
     model = record.get("response_model", "")
     if (record.get("status") != "PASS" or record.get("finish_reason") != "stop"
-            or not isinstance(model, str) or not re.fullmatch(r"gpt-4o-mini(?:-\d{4}-\d{2}-\d{2})?", model)
+            or not is_mini_response(model)
             or not isinstance(record.get("content"), str)):
         raise StateUnavailable("HLM provider failed or actual model unverified")
     return record["content"]

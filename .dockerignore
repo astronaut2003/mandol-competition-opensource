@@ -1,4 +1,13 @@
 # Exclude local state at every depth; keep source directories named core.
+work
+outputs
+legacy
+benchmarks
+experiments
+private
+reports
+results
+**/*.har
 **/.git
 **/.venv
 **/__pycache__

@@ -10,7 +10,8 @@ from mandol_substrate.state.models import digest
 from tests.common.test_publication import coordinator
 
 
-def test_user_purge_resumes_all_retained_recipes_without_touching_another_user(tmp_path, profile):
+@pytest.mark.parametrize("cleanup_error", [RuntimeError, StateUnavailable])
+def test_user_purge_resumes_all_retained_recipes_without_touching_another_user(tmp_path, profile, cleanup_error):
     identity = ResourceIdentity("textual", "textual", "textual_test")
     state = SQLiteStateStore(tmp_path / "state.sqlite3", profile, identity=identity)
     c, projection = coordinator(state, profile, tmp_path)
@@ -34,10 +35,12 @@ def test_user_purge_resumes_all_retained_recipes_without_touching_another_user(t
     def cleanup(scope):
         if scope == raw_a and not failure:
             failure.append(True)
-            raise RuntimeError("interrupted after raw projection deletion")
+            raise cleanup_error("interrupted after raw projection deletion")
     service.graphs = SimpleNamespace(evict=cleanup)
     try:
-        with pytest.raises(StateUnavailable):
+        # A fault-injected cleanup exception propagates unchanged. Recovery
+        # must preserve the same durable intent for either exception category.
+        with pytest.raises(cleanup_error, match="interrupted after raw projection deletion"):
             service.purge("A")
         assert state.get_memories(raw_a, ["m"]) == {}
         assert all(state.get_memories(s, ["m"]) for s in derived)

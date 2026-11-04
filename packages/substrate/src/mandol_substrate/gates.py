@@ -5,7 +5,8 @@ import time
 from collections import deque
 from contextlib import contextmanager
 
-from .state.models import StateUnavailable
+from .state.models import ScopeBusy, StateUnavailable
+from .deadlines import scope_wait_budget
 
 
 class _Gate:
@@ -24,6 +25,9 @@ class _Gate:
             self.queue.append(ticket)
             try:
                 while True:
+                    request_remaining = scope_wait_budget()
+                    if request_remaining is not None and request_remaining <= 0:
+                        raise StateUnavailable('scope request deadline expired before admission')
                     preceding = []
                     for queued in self.queue:
                         if queued is ticket:
@@ -38,7 +42,7 @@ class _Gate:
                         break
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise StateUnavailable("scope publication lease timed out")
+                        raise ScopeBusy("scope publication lease timed out")
                     self.condition.wait(remaining)
                 self.queue.remove(ticket)
                 if write:
@@ -70,6 +74,10 @@ class ScopeGates:
 
     @contextmanager
     def lease(self, scope, *, write=False):
+        request_remaining = scope_wait_budget()
+        if request_remaining is not None and request_remaining <= 0:
+            raise StateUnavailable('scope request deadline expired before admission')
+        timeout = self.timeout if request_remaining is None else request_remaining
         with self._lock:
             if scope.key not in self._gates:
                 if len(self._gates) >= self.max_inflight_scopes:
@@ -78,7 +86,7 @@ class ScopeGates:
             gate = self._gates[scope.key]
             gate.references += 1
         try:
-            with gate.lease(write, self.timeout):
+            with gate.lease(write, timeout):
                 yield
         finally:
             with self._lock:

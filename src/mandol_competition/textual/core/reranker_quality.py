@@ -571,28 +571,33 @@ class StrictQualityProvider:
         import os
         from mandol_competition.inference.http import HTTPTransport
         from mandol_competition.inference.vlm import HTTPVLMClient
+        from mandol_competition.inference.generation import generation_route
 
         if type(retries) is not int or not 0 <= retries <= 4:
             raise ValueError("Bounded provider retry count required")
         credential_env = os.getenv("MANDOL_LLM_API_KEY_ENV", "CLOSEAI_API_KEY")
-        key = os.getenv(credential_env)
-        if not key:
-            raise RuntimeError("Configured GPT credential is required")
         model = os.getenv("MANDOL_LLM_MODEL", "gpt-4o-mini-closeai")
         self.actual_model = os.getenv("MANDOL_LLM_REQUEST_MODEL", "gpt-4o-mini")
-        if model != "gpt-4o-mini-closeai" or self.actual_model != "gpt-4o-mini":
+        if model != "gpt-4o-mini-closeai" or self.actual_model not in {'gpt-4o-mini', 'openai/gpt-4o-mini'}:
             raise ValueError("Frozen provider/model mismatch")
         base_url = os.getenv("MANDOL_LLM_BASE_URL", "https://api.openai-proxy.org/v1")
+        route = generation_route(base_url, self.actual_model, credential_env=credential_env)
+        key = route.key()
+        self.actual_model = 'gpt-4o-mini'  # Stable semantic model; wire name is recorded separately.
+        base_url = route.endpoint
         self._retries = ContextVar("quality_http_retry_events", default=None)
-        self.client = HTTPVLMClient(base_url, self.actual_model, transport=HTTPTransport(
+        self.client = HTTPVLMClient(base_url, route.model, transport=HTTPTransport(
             base_url, timeout=timeout, max_attempts=retries + 1,
-            api_key=key, transport=transport, sleep=self._retry_sleep,
+            api_key=key, proxy=route.proxy, transport=transport, sleep=self._retry_sleep,
         ))
         endpoint = urlsplit(base_url)
         self.metadata = {
             "configured_model": model,
             "actual_model": self.actual_model,
-            "provider": "openai-proxy",
+            "provider": route.provider,
+            "wire_model": route.model,
+            "credential_env": route.credential_env,
+            "proxy": route.proxy,
             "temperature": 0,
             "endpoint": {
                 "scheme": endpoint.scheme,
@@ -630,28 +635,21 @@ class StrictQualityProvider:
         started, retries = time.monotonic(), []
         token = self._retries.set(retries)
         row = {"status": "FAIL", "usage": None}
-        request = {
-            "model": self.actual_model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": max_tokens,
-        }
+        options = {'temperature': 0, 'max_tokens': max_tokens}
         response_format = self.response_format(messages, json_mode)
         if response_format is not None:
-            request["response_format"] = response_format
-        row["request_sha256"] = fingerprint(request)
+            options['response_format'] = response_format
         try:
+            request = self.client.prepare(messages, **options)
+            row["request_sha256"] = fingerprint(request)
             response = await self._request(request)
             row["response_model"] = response.get("model")
             row["usage"] = {
                 field: (response.get("usage") or {}).get(field)
                 for field in ("prompt_tokens", "completion_tokens", "total_tokens")
             }
-            if not (
-                row["response_model"] == "gpt-4o-mini"
-                or isinstance(row["response_model"], str)
-                and row["response_model"].startswith("gpt-4o-mini-")
-            ):
+            from mandol_competition.inference.generation import is_mini_response
+            if not is_mini_response(row['response_model']):
                 raise ValueError("Unexpected response model")
             if len(response["choices"]) != 1:
                 raise ValueError("Unexpected choice count")
@@ -1543,7 +1541,7 @@ def _validate_finalist_resume(
                 ("judge", messages, config["judge_max_tokens"]),
             ):
                 call = arm[stage]
-                requested_model = config["provider"]["actual_model"]
+                requested_model = config["provider"].get("wire_model", config["provider"]["actual_model"])
                 request = {
                     "model": requested_model,
                     "messages": stage_messages,
@@ -1552,15 +1550,13 @@ def _validate_finalist_resume(
                 }
                 if stage == "judge" and native_prompt is None:
                     request["response_format"] = {"type": "json_object"}
+                if config["provider"]["provider"] == "openrouter":
+                    request.update(provider={"require_parameters": True}, transforms=[])
+                from mandol_competition.inference.generation import is_mini_response
                 if (
                     call.get("request_sha256") != fingerprint(request)
                     or call.get("finish_reason") != "stop"
-                    or not (
-                        call.get("response_model") == requested_model
-                        or call.get("response_model", "").startswith(
-                            requested_model + "-"
-                        )
-                    )
+                    or not is_mini_response(call.get("response_model"))
                 ):
                     raise ValueError(
                         "Resume raw provider identity/request/finish mismatch"

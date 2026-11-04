@@ -31,7 +31,7 @@ MessageContent = Annotated[str | list[ContentPart], Field(min_length=1)]
 
 class Message(_ContractModel):
     role: Literal["user", "assistant"]
-    timestamp: StrictInt | None = None
+    timestamp: StrictInt | None = Field(default=None,ge=-(2**63),le=2**63-1)
     content: MessageContent
 
     def parts(self) -> list[ContentPart]:
@@ -67,8 +67,9 @@ class SearchRequest(_ContractModel):
 
 
 class SearchItem(_ContractModel):
+    model_config = ConfigDict(strict=True,extra='ignore',allow_inf_nan=False)
     id: str = Field(min_length=1)
-    content: list[ContentPart] = Field(min_length=1)
+    content: MessageContent
     score: float | None = None
     created_at: str | None = None
 

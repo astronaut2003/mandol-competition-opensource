@@ -2,7 +2,7 @@
 
 This guide separates mechanism tests, real-model runs, and official leaderboard
 evaluation. All commands run from the repository root after the
-[Quick Start installation](../README.md#quick-start).
+[Quick Start installation](../README.md#installation).
 
 ## What the tests cover
 
@@ -12,7 +12,7 @@ evaluation. All commands run from the repository root after the
 | SQLite integration | Fresh SQLite/WAL databases | Canonical state, ledgers, publication frontiers, and restart behavior |
 | Qdrant integration | Owned disposable Qdrant 1.19.1 | Real vector publication, identity checks, retrieval, and reconciliation |
 | Synthetic HTTP API | Actual Uvicorn factories with fixture inference | Add/Search/Health wire contracts and lifecycle behavior |
-| Frozen integrity | Checked-in selections and source/profile hashes | T0/C0/M0 method artifacts |
+| Runtime integrity | Checked-in selections and source/profile hashes | Current public reproduction recipe |
 | Real-model integration | Authorized external endpoints and model artifacts | API behavior with real inference dependencies |
 
 ## Local tests
@@ -40,16 +40,21 @@ storage, strips ambient model/provider configuration, and writes results under
 Delete or recreate only the disposable container you created for testing; the
 controller does not manage unrelated services.
 
+Additional process-restart tests need an executable Qdrant 1.19.1 binary and its
+system libraries. Pass `--qdrant-binary /absolute/path/to/qdrant` to the controller
+to enable them. They start their own new temporary storage and process; without
+this explicit binary, these cases skip rather than adopt an existing server.
+
 Synthetic inference tests are reproducible checks of system behavior. They do
 not measure real-model quality or produce official AML scores.
 
 ## Real-model HTTP integration
 
-Deploy Qdrant, the paired v4 bridge, Querit, the BGE bridge, and an authorized VLM
+Deploy Qdrant, the paired v4 bridge, native Qwen3.7 reranking, and an authorized VLM
 using [Local deployment](deployment/Local-Reproduction.md) and
 [Inference deployment](deployment/Inference.md). Use fresh runtime roots and
-collections, matching frozen profiles, and serving bindings for the actual
-model artifacts. Keep GPU serving environments separate from the API environment.
+collections, matching versioned profiles, and serving bindings for the actual
+models. The current cloud recipe does not require local GPU serving.
 
 The opt-in HTTP contract tests exercise all three deployed APIs. Point the URLs
 at your disposable deployment, and set `MANDOL_AML_KEY_FILE` to a file outside
@@ -60,7 +65,7 @@ export MANDOL_AML_TEXTUAL_URL=http://127.0.0.1:18600
 export MANDOL_AML_CODE_URL=http://127.0.0.1:18601
 export MANDOL_AML_MULTIMODAL_URL=http://127.0.0.1:18602
 # Set MANDOL_AML_KEY_FILE using your secret manager or private key-file path.
-MANDOL_AML_REAL=1 .venv/bin/python -m pytest tests/aml_contract/test_real_wire.py -q
+MANDOL_AML_REAL=1 .venv/bin/python -m pytest tests/aml_contract/test_real_wire.py -q --allow-remote-inference
 ```
 
 These tests write synthetic histories and images, perform Search, and check
@@ -72,8 +77,8 @@ For quality experiments, submit your own permitted histories and queries through
 [Add/Search](API.md). Record method hashes, model revisions, serving versions,
 dtype, provider identity, data provenance, and evaluation protocol. Do not
 substitute fixture output or skipped checks for a real-model result. Provider
-calls can incur charges, and rerankers need suitable GPU memory for the frozen
-context lengths.
+calls can incur charges. Historical self-hosted GPU model recipes have their own
+serving and memory requirements.
 
 ## Optional local QA
 
@@ -116,5 +121,5 @@ not identify a provider's tokenizer, weights, or numerical implementation.
 Upstream Mandol paper results, local QA measurements, synthetic regression
 results, and official AML leaderboard scores are distinct. Official results must
 come from the platform's evaluated system version and contract. See the
-[AML documentation](https://agentmemoryleaderboard.ai/docs) for participation
+[AML documentation](https://agentmemories.ai/docs) for participation
 and evaluation procedures.

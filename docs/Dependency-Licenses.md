@@ -50,6 +50,7 @@ weights are installed separately and are not bundled with this project.
 | sniffio | 1.3.1 | MIT OR Apache-2.0 |
 | starlette | 1.3.1 | BSD-3-Clause |
 | tqdm | 4.67.3 | MPL-2.0 AND MIT |
+| tokenizers | 0.22.2 | Apache-2.0 |
 | tree-sitter | 0.25.2 | MIT |
 | tree-sitter-language-pack | 1.14.3 | MIT |
 | typing-inspection | 0.4.2 | MIT |
@@ -68,3 +69,16 @@ inference package's optional `models` extra uses Torch 2.8.0 (BSD-3-Clause),
 Transformers 4.57.6 (Apache-2.0) and Sentence Transformers 5.4.1 (Apache-2.0).
 Their transitive dependencies and separate serving environments retain their
 own terms. Model and provider terms are described in [Attribution](ATTRIBUTION.md).
+
+The input-budgeting resources under
+`src/mandol_competition/inference/tokenizers/` come from pinned public
+Qwen3-Embedding-0.6B and Qwen3.5-0.8B tokenizer revisions. Their provenance,
+SHA256 records, LICENSE and NOTICE files are retained alongside the assets.
+Only tokenizer resources are included; model weights are not distributed.
+The compatibility resources do not attest the provider's internal tokenizer.
+
+The new tokenizer dependency also resolves the locked Hugging Face Hub/Xet,
+fsspec, filelock, PyYAML, Typer, Rich, markdown-it-py, mdurl and shellingham
+packages. They are installed from their original distributions, retaining their
+own license files; they are not vendored into this repository. Consult those
+distribution metadata/notices when separately redistributing binaries.

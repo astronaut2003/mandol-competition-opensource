@@ -10,6 +10,7 @@ import time
 
 from .errors import InferenceIdentityError, InferenceSchemaError, InferenceUnavailable
 from .vlm import HTTPVLMClient
+from .generation import is_mini_response
 
 PROMPT_VERSION = "aml-existing-evidence-selector-v1"
 SYSTEM_PROMPT = """You select memory evidence. Do not answer the question or select an answer option.
@@ -40,9 +41,12 @@ class Selection:
 
 
 class EvidenceSelector:
-    def __init__(self, endpoint, *, api_key=None, timeout=90, client=None):
+    def __init__(self, endpoint, *, api_key=None, timeout=90, client=None,
+                 strict=False, system_prompt=SYSTEM_PROMPT):
         self.client = client or HTTPVLMClient(endpoint, "gpt-4o-mini", api_key=api_key,
                                              timeout=timeout)
+        self.strict = strict
+        self.system_prompt = system_prompt
 
     def select(self, *, query, options, candidates, limit, visual=False, query_images=()):
         if (not isinstance(candidates, list) or len(candidates) > 100
@@ -76,16 +80,24 @@ class EvidenceSelector:
                     blocks.append({"type": "image_url", "image_url": {"url": uri, "detail": "low"}})
                     images += 1; image_bytes += len(uri)
         try:
-            response = self.client.complete([{"role": "system", "content": SYSTEM_PROMPT},
+            response = self.client.complete([{"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": blocks}], request_id=None, temperature=0.,
                 response_format={"type": "json_object"}, max_tokens=600)
+            if not isinstance(response, dict):
+                raise InferenceSchemaError("selector_invalid_response")
             observed = response.get("model")
-            if observed not in {"gpt-4o-mini", "gpt-4o-mini-2024-07-18"}:
+            if not is_mini_response(observed):
                 raise InferenceIdentityError("selector wire model identity mismatch")
-            choice = response["choices"][0]
+            choices = response.get("choices")
+            if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+                raise InferenceSchemaError("selector_invalid_choices")
+            choice = choices[0]
             if choice.get("finish_reason") != "stop":
                 raise InferenceSchemaError("selector_incomplete_output")
-            content = choice.get("message", {}).get("content")
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                raise InferenceSchemaError("selector_invalid_message")
+            content = message.get("content")
             parsed = json.loads(content) if isinstance(content, str) else None
             if not isinstance(parsed, dict) or set(parsed) != {"indices"}:
                 raise InferenceSchemaError("selector_invalid_schema")
@@ -96,7 +108,11 @@ class EvidenceSelector:
                 raise InferenceSchemaError("selector_invalid_indices")
             return Selection(tuple(indices), "selected", time.monotonic() - started,
                              response.get("usage"), observed)
-        except (InferenceUnavailable, InferenceIdentityError, KeyError, TypeError, ValueError):
+        except (InferenceUnavailable, InferenceIdentityError, KeyError, TypeError, ValueError) as exc:
+            if self.strict:
+                if isinstance(exc, (InferenceUnavailable, InferenceIdentityError)):
+                    raise
+                raise InferenceSchemaError("selector_invalid_response") from exc
             return Selection(fallback, "fallback", time.monotonic() - started)
 
     def close(self):

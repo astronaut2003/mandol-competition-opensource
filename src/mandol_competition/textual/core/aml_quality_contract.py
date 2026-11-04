@@ -1,8 +1,8 @@
-"""Evaluation-only AML prompt and wire-content preparation.
+"""Evaluation-only AML prompt and wire-content preparation for the next Q0.
 
 This module never imports the official API configuration or calls a model. It
 reads hash-pinned public prompt literals and preserves the public renderer's
-semantics. These helpers are separate from memory Add / Search execution.
+semantics. It does not modify the already frozen Q-1M QA experiment.
 """
 
 import ast

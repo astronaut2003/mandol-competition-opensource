@@ -82,3 +82,25 @@ def test_old_failed_probe_cannot_override_new_success(monkeypatch):
         assert worker.snapshot()['available'] is True and worker.snapshot()['failures']==0
     finally:
         release.set(); worker.close()
+
+
+def test_bridge_preserves_quota_status_retry_after_and_only_safe_identifiers(monkeypatch):
+    from mandol_competition.inference.errors import InferenceRateLimited
+    module=bridge(monkeypatch)
+    class Limited(Provider):
+        def encode(self,texts,*,query=False):
+            if self.fail:
+                raise InferenceRateLimited('PRIVATE CONTENT',retry_after=120.1,
+                    provider_error_code='Throttling.AllocationQuota',provider_request_id='artificial-provider-123')
+            return super().encode(texts,query=query)
+    provider=Limited();dense,sparse=official_embedding_recipes()
+    with TestClient(module.create_app(lambda:provider,recovery_delay=.01)) as client:
+        provider.fail=True
+        response=client.post('/v1/encode',json={'model':MODEL,'input':['artificial evidence'],
+            'input_type':'query','dense_recipe_hash':dense.hash,'sparse_recipe_hash':sparse.hash})
+        assert response.status_code==429 and response.headers['Retry-After']=='121'
+        assert response.headers['X-Mandol-Upstream-Code']=='Throttling.AllocationQuota'
+        assert response.headers['X-Mandol-Upstream-Request-ID']=='artificial-provider-123'
+        assert 'PRIVATE' not in response.text
+        assert client.get('/ops/state').json()['provider_recovery']['next_probe_seconds']>120
+        assert provider.calls==[False,True]  # No recovery dispatch before Retry-After.

@@ -1,5 +1,5 @@
 {
-  "checked_at": "2026-10-07T00:00:00+08:00",
+  "checked_at": "2026-11-01T02:40:00+08:00",
   "cycle": 2,
   "sources": [
     "https://agentmemories.ai/zh-cn/docs",
@@ -16,6 +16,9 @@
   "formal_top_k": 100,
   "search_wrapper": "data",
   "search_item_required": ["id", "content"],
+  "search_item_optional": ["score", "created_at"],
+  "result_order": "preserve retrieval rank order",
+  "no_silent_api_truncation": true,
   "score": "optional finite number, larger is more relevant",
   "auth": ["Token", "Bearer", "X-Api-Key"],
   "health": {"method": "GET", "authenticated": false, "healthy_status": "2xx", "internal_configuration": "must not disclose"},

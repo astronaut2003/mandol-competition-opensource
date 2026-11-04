@@ -341,11 +341,12 @@ class HeterogeneousProvider(AuditedQualityProvider):
 
 
 def terminal_length_rejection(record):
+    from mandol_competition.inference.generation import is_mini_response
     actual = record.get("response_model", "")
     return (
         record.get("status") == "FAIL"
         and record.get("finish_reason") == "length"
-        and (actual == "gpt-4o-mini" or actual.startswith("gpt-4o-mini-"))
+        and is_mini_response(actual)
     )
 
 

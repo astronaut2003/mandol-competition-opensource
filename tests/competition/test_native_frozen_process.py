@@ -93,6 +93,7 @@ def test_three_formal_frozen_factories_replay_restart_and_isolation(tmp_path):
         env=dict(os.environ, MANDOL_RUNTIME_ROOT=str(tmp_path/'data'),MANDOL_MEMORY_SYSTEM_KEY=key,
             MANDOL_QDRANT_ENDPOINT=qdrant,MANDOL_TEXTUAL_INFERENCE_CONTRACT='aml-official-eligible-v1',
             MANDOL_CODE_INFERENCE_CONTRACT='aml-official-eligible-v1',MANDOL_MULTIMODAL_INFERENCE_CONTRACT='aml-official-eligible-v1',
+            MANDOL_CODE_RERANKER_BACKEND='profile',
             MANDOL_TEXTUAL_EMBEDDING_ENDPOINT=v4,MANDOL_TEXTUAL_SPARSE_ENDPOINT=v4,
             MANDOL_CODE_EMBEDDING_ENDPOINT=v4,MANDOL_TEXTUAL_RERANKER_ENDPOINT=querit,
             MANDOL_MULTIMODAL_EMBEDDING_ENDPOINT=v4,MANDOL_MULTIMODAL_SPARSE_ENDPOINT=v4,

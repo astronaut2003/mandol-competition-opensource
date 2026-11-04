@@ -23,7 +23,8 @@ class AddMessage(BaseModel):
 
     role: Literal["user", "assistant"]
     content: str = Field(..., min_length=1)
-    timestamp: StrictInt | None = Field(default=None, description="Unix milliseconds")
+    timestamp: StrictInt | None = Field(default=None,ge=-(2**63),le=2**63-1,
+        description="Unix milliseconds representable by the canonical SQLite integer column")
 
     @field_validator("content")
     @classmethod
@@ -42,7 +43,7 @@ class AddMessage(BaseModel):
 
 class AddRequest(BaseModel):
     request_id: str = Field(..., min_length=1)
-    messages: list[AddMessage] = Field(..., min_length=1)
+    messages: list[AddMessage] = Field(..., min_length=1, max_length=1024)
     user_id: str = Field(..., min_length=1)
     session_id: str = Field(..., min_length=1)
 
@@ -69,7 +70,7 @@ class SearchRequest(BaseModel):
 
 
 class SearchHit(BaseModel):
-    model_config = ConfigDict(allow_inf_nan=False)
+    model_config = ConfigDict(strict=True,allow_inf_nan=False)
     id: str = Field(..., min_length=1)
     content: str = Field(..., min_length=1)
     score: float | None = None

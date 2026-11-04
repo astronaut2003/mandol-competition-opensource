@@ -1,4 +1,4 @@
-"""Experimental candidate-preserving context rendering, separate from T0.
+"""Pure Q7 candidate-preserving context hypotheses, not enabled in production.
 
 No generation, retrieval, state writes or benchmark labels. Source mention time
 is explicitly distinct from event time and ingestion-created_at. The caller

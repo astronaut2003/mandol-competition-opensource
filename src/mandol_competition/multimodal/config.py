@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -32,7 +33,9 @@ class MultimodalConfig:
     prompt_version: str = "multimodal_sgm_v1"
     schema_version: str = "1"
     vlm_max_attempts: int = 3
-    vlm_timeout_seconds: float = 60.0
+    vlm_timeout_seconds: float = 180.0
+    vlm_output_tokens: int = 1024
+    vlm_max_output_tokens: int = 1024
 
     data_ttl_days: int = 30
     retention_interval_seconds: int = 3600
@@ -48,6 +51,10 @@ class MultimodalConfig:
 
     retrieval_methods: tuple[str, ...] = DEFAULT_RETRIEVAL_METHODS
     rerank_method: str | None = "baai"
+    search_policy: str = "m0-original-v1"
+    # Search-only overlay: never enters the immutable encoding/storage profile.
+    evidence_policy: str = "baseline"
+    vision_failure_policy: str = "degrade"
     embedding_model_name: str | None = None
     embedding_dim: int | None = None
     max_graphs: int = 64
@@ -65,12 +72,46 @@ class MultimodalConfig:
     sparse_endpoint: str = "http://127.0.0.1:18202"
     reranker_endpoint: str = "http://127.0.0.1:18203"
     inference_timeout: float = 60.0
+    reranker_pool: dict = field(default_factory=dict, hash=False)
+    reranker_credential_env: str = 'DASHSCOPE_API_KEY'
     model_device: str = "cpu"
     publication_retries: int = 3
     publication_timeout: float = 45.0
     profiling_path: Path | None = None
 
     def __post_init__(self) -> None:
+        if self.vlm_backend == 'openai_compat':
+            from mandol_competition.inference.generation import generation_route
+            route = generation_route(self.vlm_base_url, self.vlm_request_model or self.vlm_model,
+                                     credential_env=self.vlm_api_key_env)
+            if route.routed:
+                object.__setattr__(self, 'vlm_base_url', route.endpoint)
+                object.__setattr__(self, 'vlm_request_model', route.model)
+                object.__setattr__(self, 'vlm_api_key_env', route.credential_env)
+        from .vlm.output_guard import validate_output_budgets
+        try:
+            validate_output_budgets(self.vlm_output_tokens, self.vlm_max_output_tokens)
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from None
+        if (type(self.vlm_timeout_seconds) not in (int, float)
+                or not math.isfinite(self.vlm_timeout_seconds)
+                or not 0 < self.vlm_timeout_seconds <= 600):
+            raise ConfigurationError("VLM attempt timeout must be positive and at most 600 seconds")
+        if self.evidence_policy not in {"baseline", "source-grounded-v1", "source-grounded-atomic-v2",
+                                        "source-grounded-delivery-v3", "source-grounded-recall-v4"}:
+            raise ConfigurationError("Unknown multimodal evidence policy")
+        if self.vision_failure_policy not in {"degrade", "retry-required-v1"}:
+            raise ConfigurationError("Unknown multimodal vision failure policy")
+        if self.evidence_policy != "baseline" and self.vlm_backend != "openai_compat":
+            raise ConfigurationError("Grounded evidence selection requires the real mini endpoint")
+        if self.search_policy not in {"m0-original-v1", "mm-querit-same-pool-rank-only-v1", "mm-qwen37-same-pool-rank-only-v1"}:
+            raise ConfigurationError("Unknown multimodal search policy")
+        if self.search_policy == "mm-querit-same-pool-rank-only-v1" and (
+                self.inference_contract != "aml-official-eligible-v1" or self.rerank_method != "baai"):
+            raise ConfigurationError("MM Querit requires the named-v4 M0 index and enabled reranking")
+        if self.search_policy == 'mm-qwen37-same-pool-rank-only-v1' and (
+                self.inference_contract != 'aml-official-eligible-v1' or self.rerank_method != 'baai'):
+            raise ConfigurationError('MM Qwen requires the named-v4 M0 index and enabled reranking')
         if self.inference_contract not in {"vllm-http-v1","aml-official-eligible-v1"}:
             raise ConfigurationError("Unknown multimodal inference contract")
         if self.vlm_backend not in {"fake", "openai_compat"}:
@@ -115,11 +156,17 @@ def get_config() -> MultimodalConfig:
         prompt_version=os.getenv("MANDOL_MM_PROMPT_VERSION", "multimodal_sgm_v1"),
         schema_version=os.getenv("MANDOL_MM_SCHEMA_VERSION", "1"),
         vlm_max_attempts=int(os.getenv("MANDOL_MM_VLM_MAX_ATTEMPTS", "3")),
+        vlm_timeout_seconds=float(os.getenv("MANDOL_MM_VLM_TIMEOUT_SECONDS", "180")),
+        vlm_output_tokens=int(os.getenv('MANDOL_MM_VLM_OUTPUT_TOKENS', '1024')),
+        vlm_max_output_tokens=int(os.getenv('MANDOL_MM_VLM_MAX_OUTPUT_TOKENS', '1024')),
         max_images=int(os.getenv("MANDOL_MM_MAX_IMAGES", "10")),
         retrieval_methods=tuple(method.strip() for method in os.getenv(
             "MANDOL_MM_RETRIEVAL_METHODS", ",".join(DEFAULT_RETRIEVAL_METHODS)
         ).split(",") if method.strip()),
         rerank_method=os.getenv("MANDOL_MM_RERANK_METHOD", "baai").strip() or None,
+        search_policy=os.getenv("MANDOL_MULTIMODAL_RETRIEVAL_POLICY", "m0-original-v1"),
+        evidence_policy=os.getenv("MANDOL_MM_EVIDENCE_POLICY", "baseline"),
+        vision_failure_policy=os.getenv("MANDOL_MM_VISION_FAILURE_POLICY", "degrade"),
         embedding_model_name=os.getenv("MANDOL_MM_EMBEDDING_MODEL") or None,
         embedding_dim=int(os.getenv("MANDOL_MM_EMBEDDING_DIM", "0")) or None,
         max_graphs=int(os.getenv("MANDOL_MM_MAX_GRAPHS", "64")),

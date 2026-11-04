@@ -29,7 +29,7 @@ def test_production_operational_routes_reject_nonlocal_and_spoofed_peers(monkeyp
     @app.post('/admin/purge')
     def purge():raise AssertionError('remote administrative mutation must not run')
     install_observability(app,'multimodal',ready=lambda:True)
-    with TestClient(app,client=('172.19.208.9',12345)) as remote:
+    with TestClient(app,client=('10.0.0.12',12345)) as remote:
         assert remote.get('/health').status_code==200
         for route in ('/metrics','/metrics/','/readyz','/livez','/admin/purge'):
             response=remote.request('POST' if route.startswith('/admin') else 'GET',route,

@@ -13,6 +13,24 @@ import time
 from .models import Conflict, canonical_json
 
 
+_MEDIA_FIELDS = frozenset({'image', 'image_uri', 'image_data_uri', 'image_data',
+                           'image_url', 'url', 'data_uri'})
+
+
+def _inline_media(value, field=None):
+    """Reject media payload fields, without interpreting source text as media.
+
+    A code snippet, Markdown string or OCR transcription may legitimately
+    contain a Data URI. Only structured media fields are payload carriers;
+    strings are never parsed a second time as JSON or markup here.
+    """
+    if isinstance(value, str):
+        return field in _MEDIA_FIELDS and value.lstrip().lower().startswith('data:image/')
+    if isinstance(value, dict):
+        return any(_inline_media(child, key) for key, child in value.items())
+    return isinstance(value, (list, tuple)) and any(_inline_media(child, field) for child in value)
+
+
 class RequestLedger:
     def __init__(self, state):
         self.state = state
@@ -38,7 +56,7 @@ class RequestLedger:
 
     def checkpoint(self, scope, request_id, payload_digest, value):
         encoded = canonical_json(value)
-        if "data:image/" in encoded:
+        if _inline_media(value):
             raise ValueError("inline media cannot enter request checkpoints")
         with self.state.transaction() as db:
             row = db.execute("SELECT payload_digest FROM request_preparations WHERE scope=? AND request_id=?",
