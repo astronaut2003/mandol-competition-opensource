@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 import json
+import logging
 import os
 
 from mandol_substrate.deadlines import remaining_budget
@@ -63,7 +64,7 @@ Return only outer candidate_index integers, never source_group labels.
 class PartitionedEvidenceGuard:
     def __init__(self, config):
         options = dict(api_key=os.environ.get(config.vlm_api_key_env), strict=True,
-                       timeout=min(90., config.vlm_timeout_seconds))
+                       timeout=min(90., config.vlm_timeout_seconds), normalize_indices=True)
         self.primary = EvidenceSelector(config.vlm_base_url, system_prompt=PRIMARY_PROMPT, **options)
         try:
             self.verifier = EvidenceSelector(config.vlm_base_url, system_prompt=VERIFY_PROMPT, **options)
@@ -119,6 +120,7 @@ class EvidencePlan:
     contexts: tuple[ContextSource, ...] = ()
     complete_absence_review: bool = False
     model_calls: int = 0
+    review_incomplete_reason: str | None = None
 
 
 @dataclass
@@ -292,8 +294,23 @@ def review_sources(guard, request, hits, media, contexts=()):
                           limit=min(MAX_SELECTED, len(candidates)), visual=True,
                           query_images=tuple(scan.query_images))
             select = guard.select if phase == 'primary' else guard.confirm_absence
-            selected = _indices(select(**inputs), len(candidates), inputs['limit'])
             calls += 1
+            try:
+                selected = _indices(select(**inputs), len(candidates), inputs['limit'])
+            except InferenceSchemaError as exc:
+                # This optional review cannot invalidate already published,
+                # scoped evidence. A bad reply is uncertainty, never absence.
+                allowed = {'selector_invalid_indices', 'selector_invalid_schema',
+                    'selector_invalid_response', 'selector_invalid_choices',
+                    'selector_invalid_message', 'selector_incomplete_output',
+                    'partitioned_guard_invalid_selection', 'invalid_vlm_response',
+                    'invalid_vlm_choices'}
+                reason = exc.error_class if exc.error_class in allowed else 'invalid_selector_response'
+                logging.getLogger(__name__).warning(json.dumps(dict(
+                    event='multimodal_evidence_review_incomplete', reason=reason,
+                    phase=phase, model_calls=calls, baseline_preserved=True)))
+                return EvidencePlan(baseline, model_calls=calls,
+                    review_incomplete_reason='invalid_selector_response')
             if selected:
                 units = tuple(dict.fromkeys(sources[mapping[i]].uid for i in selected))
                 preferred = tuple(unit for unit in sources if unit.uid in units)

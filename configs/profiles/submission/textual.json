@@ -1,6 +1,6 @@
 {
   "profile": {
-    "snapshot": "aml-t0-c0-m0",
+    "snapshot": "mm-source-preserving-add-20261113-v3",
     "inference_contract": "aml-official-eligible-v1",
     "embedding_model": "text-embedding-v4",
     "reranker_model": "qwen3.7-text-rerank",
@@ -14,7 +14,8 @@
     "track": "textual",
     "retrieval_policy": "baseline",
     "evidence_profile": "textual-t0-observation-history-v1",
-    "collection": "textual_aml_v4_v1"
+    "collection": "textual_aml_v4_v1",
+    "periodic_paid_reranker_probes": false
   },
-  "profile_sha256": "a73f06ae626d74f174253d4a1e9435ac7afae1166fb7f911c5987f1605932e26"
+  "profile_sha256": "b7dc34d32397f029730655fba5f3f5152f64175917787dd912edc0e0aab76520"
 }

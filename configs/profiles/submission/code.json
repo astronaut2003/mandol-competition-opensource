@@ -1,6 +1,6 @@
 {
   "profile": {
-    "snapshot": "aml-t0-c0-m0",
+    "snapshot": "mm-source-preserving-add-20261113-v3",
     "inference_contract": "aml-official-eligible-v1",
     "embedding_model": "text-embedding-v4",
     "reranker_model": "qwen3.7-text-rerank",
@@ -14,7 +14,8 @@
     "track": "code",
     "retrieval_policy": "code-native-sparse-rrf100-v1",
     "reranker_required": false,
-    "collection": "code_aml_v4_v1"
+    "collection": "code_aml_v4_v1",
+    "periodic_paid_reranker_probes": false
   },
-  "profile_sha256": "450b36aa3d1225fa16525f5740b452a2bb778a7e22874986e24ec2293818b3d0"
+  "profile_sha256": "5b1794ef0c72c37a65ffcf5c7eaeec0493ba6aaa316f49ed3b5bdc473960d5d9"
 }

@@ -1,7 +1,7 @@
 # Local reproduction
 
 Use Linux, Python 3.12, and the locked installation in [README](../../README.md).
-This guide selects the current cloud workflow. Earlier Querit/BGE examples are
+This guide selects `mm-source-preserving-add-20261113-v3`, the current cloud workflow. Earlier Querit/BGE examples are
 historical recipes with different model bindings.
 
 ## 1. Create isolated storage and Qdrant
@@ -94,8 +94,13 @@ In three terminals with the necessary environment:
 ```bash
 .venv/bin/python scripts/start_api.py textual --config configs/local/deployment.toml
 .venv/bin/python scripts/start_api.py code --config configs/local/deployment.toml
-.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml
+.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml --initialize
 ```
+
+Use `--initialize` only for the first Multimodal start against fresh storage.
+It creates and verifies the new projection with a full initial audit, and refuses
+an existing state database. On later starts omit `--initialize` to use the selected
+fast restart path. Missing projections for existing state remain an error.
 
 The launcher checks the public integrity manifest, selects the versioned OCR
 prompt and `source-grounded-recall-v4` evidence policy, and uses 1,740-second request budgets with
@@ -120,3 +125,28 @@ normal restarts. Do not change model identities under an existing collection,
 clear caches to hide failures, or restore an older memory database over newer
 data. Offline repair utilities require their own ownership, identity and
 stopped-writer checks; fresh reproduction does not require historical repair.
+
+## Visual recovery policy and quality counts
+
+`scripts/start_api.py` explicitly selects `MANDOL_MM_VISION_SOURCE_FALLBACK=1`
+and `MANDOL_MM_FULL_DATABASE_AUDIT=0`. The same flags reach legacy, local and
+cluster factories. Local/cluster model bindings still define their own recipes;
+changing topology is not evidence that different provider models are equivalent.
+
+The frozen launcher rejects conflicting values. A manually configured strict-503
+deployment can set source fallback to `0` using the ASGI factory directly; this
+is a different reproduction selection and must be recorded as such.
+
+Quality metadata distinguishes `complete`, `incomplete_ocr`, `source_only` and
+`unverified`. On your own stopped or read-only-audited reproduction store:
+
+```bash
+.venv/bin/python -m mandol_competition.multimodal.add_quality \
+  --database /absolute/path/to/your/state.sqlite3 --timeout 30
+```
+
+The command prints aggregate counts and rates, no user/request identifiers.
+Only visible published images carrying the new quality marker enter the rates;
+older unclassified images and failed Add attempts are separate. A zero
+denominator produces `null`, not a claimed zero failure rate. It does not
+re-extract or rewrite memories. Include Add failures when assessing completeness.

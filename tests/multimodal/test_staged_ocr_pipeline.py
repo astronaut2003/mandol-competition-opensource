@@ -165,6 +165,44 @@ def test_paid_ocr_failure_resumes_only_ocr_across_fresh_ledger_instances(pipelin
     assert len(p.cache.writes)==1
 
 
+def test_failed_scene_recovery_resumes_saved_fields_through_preparation_and_cache(pipeline):
+    from mandol_competition.multimodal.vlm import scene_recovery
+    p=pipeline(lambda *_:pytest.fail('handler not installed'));failed=False
+    def handler(_stage,_number):
+        nonlocal failed
+        name=p.sdk.calls[-1]['options']['response_format']['json_schema']['name']
+        if name in {'visual_memory_ocr_lines_v2','scene_bounded_v1'}:
+            limit=p.sdk.calls[-1]['options']['max_completion_tokens']
+            value=reply({},tokens=limit,finish='length')
+            value.choices[0].message.content='{"description":"unfinished'
+            return value
+        if name.startswith('scene_fields_v1_'):
+            group=name.removeprefix('scene_fields_v1_')
+            if group=='entities' and not failed:
+                failed=True;raise InferenceUnavailable('ReadError',unknown_outcome=True)
+            payload=visual()
+            return reply({key:payload[key] for key in ('description','tags','location_hint')}
+                if group=='overview' else dict(items=payload[group],has_more=False))
+        return reply(localize()) if name=='ocr_physical_text_localization_v1' else reply(crop())
+    p.sdk.handler=handler
+    with pytest.raises(VisionExtractionUnavailable):extract(p)
+    saved=p.ledger().value['vision']['0:1']['stage_checkpoint']
+    assert saved['scene'] is None and not p.cache.writes
+    assert len(saved['scene_recovery']['pages'])==1
+    assert saved['scene_recovery']['policy']==scene_recovery.policy()
+    result=extract(p)
+    final=p.ledger().value['vision']['0:1']['stage_checkpoint']
+    assert result.description==visual()['description'] and result.ocr_text=='Literal label'
+    assert final['calls'][:len(saved['calls'])]==saved['calls']
+    assert final['paid_calls']>saved['paid_calls'] and final['spent']>saved['spent']
+    schemas=[call['options']['response_format']['json_schema']['name'] for call in p.sdk.calls]
+    assert schemas.count('visual_memory_ocr_lines_v2')==schemas.count('scene_bounded_v1')==1
+    assert schemas.count('scene_fields_v1_overview')==1 and len(p.cache.writes)==1
+    assert p.ledger().value['vision']['0:1']['status']=='complete'
+    count=len(p.sdk.calls)
+    assert extract(p)==result and len(p.sdk.calls)==count
+
+
 def test_cumulative_budget_is_not_refreshed_by_multiple_sixty_second_windows(pipeline):
     def handler(stage,n):
         if stage=='crop':raise InferenceUnavailable('ReadError',unknown_outcome=True)
@@ -334,8 +372,9 @@ def test_real_sse_cumulative_empty_lines_prefix_completes_no_text_pipeline(pipel
     monkeypatch.setenv('MANDOL_GENERATION_PROVIDER','configured')
     p=pipeline(lambda *_:pytest.fail('legacy SDK must not run'));seen=[];closed=[]
     class Chunks(httpx.SyncByteStream):
+        def __init__(self, value):self.value=value
         def __iter__(self):
-            text=json.dumps(crop(mode='no_text'),separators=(',',':'))
+            text=json.dumps(self.value,separators=(',',':'))
             for character in text:
                 chunk=dict(model='gpt-4o-mini',choices=[dict(index=0,delta={'content':character},finish_reason=None)])
                 yield ('data: '+json.dumps(chunk)+'\n\n').encode()
@@ -347,8 +386,9 @@ def test_real_sse_cumulative_empty_lines_prefix_completes_no_text_pipeline(pipel
         data=json.loads(request.content);name=data['response_format']['json_schema']['name']
         stage='scene' if name=='visual_memory_ocr_lines_v2' else 'locator' if name=='ocr_physical_text_localization_v1' else 'crop'
         seen.append((stage,data.get('stream',False)))
-        if data.get('stream'):return httpx.Response(200,stream=Chunks())
         value=visual(['repeat']*64) if stage=='scene' else localize(no_text=True)
+        if data.get('stream'):return httpx.Response(200,stream=Chunks(
+            value if stage=='scene' else crop(mode='no_text')))
         return httpx.Response(200,json=dict(model='gpt-4o-mini',choices=[dict(index=0,
             message=dict(content=json.dumps(value),refusal=None),finish_reason='stop')],
             usage=dict(prompt_tokens=10,completion_tokens=20,total_tokens=30)))
@@ -357,8 +397,8 @@ def test_real_sse_cumulative_empty_lines_prefix_completes_no_text_pipeline(pipel
     try:
         result=extract(p)
         assert result.ocr_text=='' and result.description==visual()['description']
-        assert seen==[('scene',False),('locator',False),('crop',True)]
-        assert closed==[True] and len(p.cache.writes)==1 and not p.sdk.calls
+        assert seen==[('scene',True),('locator',False),('crop',True)]
+        assert closed==[True,True] and len(p.cache.writes)==1 and not p.sdk.calls
         assert wire.snapshot()['inflight']==wire.snapshot()['waiting']==0
         assert p.ledger().value['vision']['0:1']['stage_checkpoint']['coverage']['status']=='no_text'
     finally:wire.close()

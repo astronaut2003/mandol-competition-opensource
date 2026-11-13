@@ -51,8 +51,10 @@ def test_real_add_replay_user_isolation_options_and_16_parallel_searches(backend
     {'model':'gpt-4o-mini','choices':[{'finish_reason':'stop','message':None}]},
     {'model':'gpt-4o-mini','choices':[{'finish_reason':'stop','message':[]}]},
     {'model':'gpt-4o-mini','choices':[{'finish_reason':'length','message':{'content':'{"indices":[]}'}}]},
-    {'model':'gpt-4o-mini','choices':[{'finish_reason':'stop','message':{'content':'not-json'}}]}])
-def test_bad_provider_wire_is_503_once_and_cannot_clear_or_modify_existing_evidence(backend,monkeypatch,envelope):
+    {'model':'gpt-4o-mini','choices':[{'finish_reason':'stop','message':{'content':'not-json'}}]},
+    *[{'model':'gpt-4o-mini','choices':[{'finish_reason':'stop','message':{
+        'content':json.dumps({'indices':indices})}}]} for indices in [[True],[-1],[99],[0,0]]]])
+def test_bad_provider_wire_preserves_original_evidence_once_without_retrying_or_mutating(backend,monkeypatch,envelope):
     class Wire:
         calls=0
         def request(self,*args,**kwargs):
@@ -68,8 +70,10 @@ def test_bad_provider_wire_is_503_once_and_cannot_clear_or_modify_existing_evide
         assert client.post('/add',json=body).status_code==200
         before=backend.state.scope_state(backend.scope('alice'))['published_seq']
         response=client.post('/search',json={'user_id':'alice','query':'Printed folder label?','top_k':100})
-        assert response.status_code==503 and wire.calls==1
-        assert response.json()=={'detail':{'reason':'dependency unavailable; completion may be unknown'}}
+        assert response.status_code==200 and wire.calls==1
+        assert len(response.json()['data'])==1
+        assert 'ORBIT-47' in json.dumps(response.json())
+        assert 'Review incomplete' in json.dumps(response.json())
         assert backend.state.scope_state(backend.scope('alice'))['published_seq']==before
         assert backend.state._rows('SELECT count(*) n FROM memories')[0]['n']==1
 
@@ -102,7 +106,7 @@ def test_cross_session_original_can_be_delivered_even_when_missing_from_the_base
         assert backend.state._rows('SELECT count(*) n FROM memories')[0]['n']==2
 
 
-def test_bad_verifier_output_is_an_error_instead_of_an_empty_verdict(backend,monkeypatch):
+def test_bad_verifier_output_preserves_originals_instead_of_a_false_empty_verdict(backend,monkeypatch):
     class Wire:
         calls=0
         def request(self,*args,**kwargs):
@@ -117,5 +121,7 @@ def test_bad_verifier_output_is_an_error_instead_of_an_empty_verdict(backend,mon
     with TestClient(app_for(backend,monkeypatch,guard),raise_server_exceptions=False) as client:
         assert client.post('/add',json=request(content='Original fact ORBIT-47.').model_dump()).status_code==200
         reply=client.post('/search',json={'user_id':'alice','query':'Printed label?','top_k':100})
-        assert reply.status_code==503 and wire.calls==2
+        assert reply.status_code==200 and wire.calls==2
+        assert len(reply.json()['data'])==1
+        assert 'ORBIT-47' in json.dumps(reply.json()) and 'Review incomplete' in json.dumps(reply.json())
         assert backend.state._rows('SELECT count(*) n FROM memories')[0]['n']==1

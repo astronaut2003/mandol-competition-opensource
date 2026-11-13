@@ -44,6 +44,12 @@ def crop():
         lines=[dict(bbox=[100,100,900,200], text='Literal visible label')], unreadable_regions=[])
 
 
+def field_responses(value=None):
+    value = value or scene()
+    return [response({key: value[key] for key in ('description', 'tags', 'location_hint')})] + [
+        response(dict(items=value[key], has_more=False)) for key in ('entities', 'objects', 'events', 'relations')]
+
+
 def response(body, *, tokens=40, finish='stop'):
     return SimpleNamespace(content=body if isinstance(body, str) else json.dumps(body),
         tokens=tokens, finish=finish)
@@ -128,31 +134,35 @@ def test_first_incomplete_scene_uses_different_schema_immediately_not_second_ful
 
 
 @pytest.mark.parametrize('bad', [
-    response(scene(), tokens=1024, finish='length'),
+    response('{"description":"unfinished', tokens=1024, finish='length'),
     response('{"description":"still unfinished', tokens=300),
     response(dict(description='Only one field; never fill the others.')),
     response(dict(scene(), ocr_lines=[])),
 ])
-def test_incomplete_or_non_strict_fallback_is_not_saved_and_cannot_dispatch_again(bad):
-    client=FixtureClient([bad]); data=inputs(); snapshots=[]
-    with pytest.raises(VisionOutputError):
+def test_incomplete_fallback_and_failed_field_recovery_cannot_publish_or_dispatch_forever(bad):
+    client=FixtureClient([bad, response({'description':'Missing typed fields'}),
+                          response({'description':'Missing typed fields'})]); data=inputs(); snapshots=[]
+    with pytest.raises(RecoveryBudgetExhausted):
         staged.complete_staged(client, **data, resume=history(client,data), checkpoint=snapshots.append)
     assert snapshots[-1]['scene'] is None and snapshots[-1]['final_payload'] is None
     before=len(client.calls); used=snapshots[-1]['spent']
     with pytest.raises(RecoveryBudgetExhausted):
         staged.complete_staged(client, **data, resume=snapshots[-1], checkpoint=snapshots.append)
-    assert len(client.calls)==before==1 and snapshots[-1]['spent']==used
+    assert len(client.calls)==before==3 and snapshots[-1]['spent']==used
+    assert snapshots[-1]['scene_recovery']['pages']==[]
 
 
-def test_unknown_paid_bounded_dispatch_consumes_its_once_only_allowance():
+def test_unknown_paid_bounded_dispatch_is_not_repeated_and_distinct_field_recipe_can_resume():
     class UnknownPaid(RuntimeError): unknown_outcome=True
-    client=FixtureClient([UnknownPaid('artificial outcome unknown')]); data=inputs(); snapshots=[]
+    client=FixtureClient([UnknownPaid('artificial outcome unknown'),*field_responses(),
+                         response(localization()),response(crop())]); data=inputs(); snapshots=[]
     with pytest.raises(UnknownPaid):
         staged.complete_staged(client, **data, resume=history(client,data), checkpoint=snapshots.append)
     assert snapshots[-1]['spent']==3072 and snapshots[-1]['paid_calls']==3
-    with pytest.raises(RecoveryBudgetExhausted):
-        staged.complete_staged(client, **data, resume=snapshots[-1])
-    assert len(client.calls)==1
+    payload,_,_,_=staged.complete_staged(client, **data, resume=snapshots[-1],checkpoint=snapshots.append)
+    assert payload['description']==scene()['description']
+    assert names(client).count('scene_bounded_v1')==1
+    assert snapshots[-1]['spent']==3072+7*40 and snapshots[-1]['paid_calls']==10
 
 
 @pytest.mark.parametrize('other_calls,other_tokens', [(14,1024),(18,1)])

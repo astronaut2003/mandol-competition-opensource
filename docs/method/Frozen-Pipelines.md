@@ -1,6 +1,6 @@
 # Competition method artifacts
 
-The T0/C0/M0 submission combines v4 embedding, Qwen3.7 reranking, Textual
+The current `mm-source-preserving-add-20261113-v3` recipe combines v4 embedding, Qwen3.7 reranking, Textual
 observation-history output, Coding native-Sparse/Dense RRF, and Multimodal
 staged OCR with source-grounded evidence review. The [workflow](Current-Workflow.md)
 describes how these components are used by each track.
@@ -22,3 +22,8 @@ keeps the documented configuration and implementation in sync.
 Historical adapters retain their corresponding profile resources. When running
 an earlier recipe, use its matching model identities, schema and collections.
 New deployments use separate storage roots and collections for the three tracks.
+
+The earlier public M0 baseline remains available at public commit `1be0776`.
+Current descriptors identify the new recipe; they do not attest that every
+historical evaluation request used it. External model outputs and a maintained
+historical database need not match a fresh replay.

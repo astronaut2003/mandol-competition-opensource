@@ -1,6 +1,6 @@
 {
   "profile": {
-    "snapshot": "aml-t0-c0-m0",
+    "snapshot": "mm-source-preserving-add-20261113-v3",
     "inference_contract": "aml-official-eligible-v1",
     "embedding_model": "text-embedding-v4",
     "reranker_model": "qwen3.7-text-rerank",
@@ -19,7 +19,14 @@
     "prompt_version": "multimodal_sgm_v3_ocr_lines",
     "schema_version": "1",
     "configured_output_tokens": 1024,
-    "collection": "multimodal_aml_v4_v1"
+    "collection": "multimodal_aml_v4_v1",
+    "periodic_paid_reranker_probes": false,
+    "vision_source_fallback": true,
+    "full_database_audit": false,
+    "max_output_tokens_per_call": 1024,
+    "max_cumulative_output_tokens": 16384,
+    "max_paid_calls_per_image": 20,
+    "visual_add_quality": "mm-add-quality-v1"
   },
-  "profile_sha256": "f6102e575180f65d178e1a6b3140f46506ad8d2c1bc107aa3a838f2f9bd8992e"
+  "profile_sha256": "a589fcd496c9e622e346a5a386068acc62b1a90fe8e1466841f2ad4477d88773"
 }

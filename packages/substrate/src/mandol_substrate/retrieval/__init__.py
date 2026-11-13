@@ -47,9 +47,14 @@ class RetrievalBackend:
                 raise StateUnavailable("published projection missing or different; explicit reconciliation required")
         self.projection.audit_rows(scope)
 
-    def search(self, scope, query, *, top_k, candidate_route=None):
+    def search(self, scope, query, *, top_k, candidate_route=None, full_audit=True):
         with self.coordinator.search_view(scope) as view:
-            self.verify_scope(scope)
+            if type(full_audit) is not bool:
+                raise ValueError('full_audit must be a bool')
+            # The published view and per-hit canonical/vector checks below
+            # remain mandatory. Whole-corpus audits are an operator choice.
+            if full_audit:
+                self.verify_scope(scope)
             route = candidate_route(view) if candidate_route is not None else CandidateRoute()
             if not isinstance(route, CandidateRoute):
                 raise ValueError("adapter must return a canonical CandidateRoute")

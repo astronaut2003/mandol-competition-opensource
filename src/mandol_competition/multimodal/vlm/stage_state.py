@@ -18,7 +18,7 @@ MAX_JSON_BYTES = 2 * 1024 * 1024
 REVIEW_REASONS = frozenset({'truncated_ocr', 'invalid_ocr', 'sequential_numbers', 'repeated_lines',
                            'numeric_repetition', 'long_output'})
 UPDATE_FIELDS = frozenset({'scene', 'localization', 'tasks', 'results', 'coverage',
-                           'complete_receipt', 'final_payload', 'final_usage', 'ocr_repair'})
+                           'complete_receipt', 'final_payload', 'final_usage', 'ocr_repair', 'scene_recovery', 'ocr_strategy'})
 STATE_FIELDS = frozenset({'format', 'binding', 'binding_sha256', 'spent', 'observed_tokens',
     'paid_calls', 'content_failures', 'known_rejections', 'reservation', 'calls',
     'historical_cost_unknown', 'single_new_policy_grant', 'final_payload_sha256', *UPDATE_FIELDS})
@@ -164,6 +164,23 @@ def _validate(state, binding):
     _need(charged == state['spent'] and observed == state['observed_tokens'] and paid == state['paid_calls']
           and rejected <= state['known_rejections'], 'stage checkpoint accounting mismatch')
     _scene(state['scene'])
+    from . import ocr_strategy
+    try:
+        ocr_strategy.validate(state['ocr_strategy'],state['calls'])
+    except (TypeError,ValueError,KeyError) as exc:
+        raise RecoveryStateError('OCR strategy checkpoint invalid') from exc
+    from . import ocr_concise
+    _need(len(ocr_concise.paid_calls(state['calls']))<=ocr_concise.MAX_CALLS,
+          'concise OCR allowance exceeded')
+    from . import scene_recovery
+    try:
+        scene_recovery.validate_checkpoint(state['scene_recovery'], state['calls'])
+        if state['scene'] is not None and state['scene']['metadata'].get('scene_recovery_policy') is not None:
+            _need(state['scene_recovery'] is not None
+                  and scene_recovery.scene_record(state['scene_recovery']) == state['scene'],
+                  'scene recovery aggregate differs from completed pages')
+    except (TypeError, ValueError) as exc:
+        raise RecoveryStateError('scene recovery checkpoint invalid') from exc
     repair = state['ocr_repair']
     if repair is not None:
         from . import ocr_review
@@ -227,7 +244,8 @@ class StageState:
                 spent=0, observed_tokens=0, paid_calls=0, content_failures=0, known_rejections=0,
                 reservation=None, calls=[], historical_cost_unknown=legacy, single_new_policy_grant=legacy,
                 scene=None, localization=None, tasks=[], results={}, coverage=None,
-                complete_receipt=None, final_payload=None, final_payload_sha256=None, final_usage=None, ocr_repair=None)
+                complete_receipt=None, final_payload=None, final_payload_sha256=None, final_usage=None,
+                ocr_repair=None, scene_recovery=None, ocr_strategy=None)
             self._state = None
             self._persist(value)  # The one legacy grant exists durably before dispatch.
         else:
@@ -236,6 +254,8 @@ class StageState:
             # The new optional grant is versioned independently of that binding.
             if type(value) is dict:
                 value.setdefault('ocr_repair', None)
+                value.setdefault('scene_recovery', None)
+                value.setdefault('ocr_strategy', None)
             _validate(value, self.binding)
             self._state = value
             if value['reservation'] is not None:
@@ -284,9 +304,20 @@ class StageState:
         _need(_stage(stage) and _integer(limit, 1, MAX_OUTPUT_TOKENS), 'stage reservation type/range')
         _need(self._state['reservation'] is None, 'stage reservation already active')
         _need(self._state['complete_receipt'] is None, 'completed stage state cannot dispatch again')
+        from . import scene_recovery
+        if scene_recovery.is_stage(stage) and not scene_recovery.authorized(
+                self._state['scene_recovery'], self._state['calls'], stage):
+            raise RecoveryBudgetExhausted('scene field recovery allowance exhausted')
+        from . import ocr_concise
+        if ocr_concise.is_stage(stage) and not ocr_concise.authorized(self._state,stage):
+            raise RecoveryBudgetExhausted('concise OCR allowance exhausted')
+        from . import ocr_strategy
+        if ocr_strategy.is_stage(stage) and not ocr_strategy.authorized(self._state,stage):
+            raise RecoveryStateError('unbound OCR strategy dispatch')
         repair = self._state['ocr_repair']
         from . import ocr_review
-        repair_stage = stage in {ocr_review.review_stage(), ocr_review.crop_stage()}
+        repair_stage = (stage in {ocr_review.review_stage(), ocr_review.crop_stage()}
+                        or repair is not None and (ocr_concise.is_stage(stage) or ocr_strategy.is_stage(stage)))
         repairing = (repair is not None and repair_stage
                      and repair['failures'] < ocr_review.MAX_REPAIR_FAILURES)
         if stage == ocr_review.review_stage():
@@ -336,7 +367,9 @@ class StageState:
         observed = observed if not free and _integer(observed, 0, reservation['limit']) else 0
         value['observed_tokens'] += observed
         value['reservation'] = None
-        self._append(value, dict(**reservation, metadata={'error_class': 'known_not_dispatched' if free else 'unverified_paid_outcome'},
+        paid_content=bool(getattr(exc,'vision_paid_output_failure',False) or getattr(exc,'paid_output_failure',False))
+        code='known_not_dispatched' if free else 'content_output_rejected' if paid_content else 'unverified_paid_outcome'
+        self._append(value, dict(**reservation, metadata={'error_class': code},
             usage=None, charged=0 if free else reservation['limit'], observed_tokens=observed, known_rejection=free))
         self._persist(value)
 
@@ -365,6 +398,12 @@ class StageState:
         value = self.state
         if value['scene'] is not None and 'scene' in fields:
             _need(fields['scene'] == value['scene'], 'validated scene cannot be replaced or erased')
+        if value['scene_recovery'] is not None and 'scene_recovery' in fields:
+            prior, new = value['scene_recovery'], fields['scene_recovery']
+            _need(type(new) is dict and new.get('policy') == prior['policy']
+                  and type(new.get('pages')) is list
+                  and new['pages'][:len(prior['pages'])] == prior['pages'],
+                  'completed scene field pages cannot be replaced or erased')
         if value['ocr_repair'] is not None and 'ocr_repair' in fields:
             prior, new = value['ocr_repair'], fields['ocr_repair']
             _need(type(new) is dict and new.get('policy') == prior['policy']
@@ -372,6 +411,8 @@ class StageState:
                   'OCR repair grant and failures cannot be erased or refreshed')
         if value['final_payload'] is not None and 'final_payload' in fields:
             _need(fields['final_payload'] == value['final_payload'], 'completed payload cannot be replaced or erased')
+        if value['ocr_strategy'] is not None and 'ocr_strategy' in fields:
+            _need(fields['ocr_strategy']==value['ocr_strategy'],'verified OCR strategy cannot be replaced')
         value.update(deepcopy(fields))
         if 'final_payload' in fields:
             value['final_payload_sha256'] = digest(fields['final_payload']) if fields['final_payload'] is not None else None

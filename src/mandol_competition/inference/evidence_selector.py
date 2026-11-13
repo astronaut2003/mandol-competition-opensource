@@ -6,6 +6,7 @@ Gold, dataset names, evaluation labels and question IDs have no input channel.
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import time
 
 from .errors import InferenceIdentityError, InferenceSchemaError, InferenceUnavailable
@@ -42,11 +43,12 @@ class Selection:
 
 class EvidenceSelector:
     def __init__(self, endpoint, *, api_key=None, timeout=90, client=None,
-                 strict=False, system_prompt=SYSTEM_PROMPT):
+                 strict=False, system_prompt=SYSTEM_PROMPT, normalize_indices=False):
         self.client = client or HTTPVLMClient(endpoint, "gpt-4o-mini", api_key=api_key,
                                              timeout=timeout)
         self.strict = strict
         self.system_prompt = system_prompt
+        self.normalize_indices = normalize_indices
 
     def select(self, *, query, options, candidates, limit, visual=False, query_images=()):
         if (not isinstance(candidates, list) or len(candidates) > 100
@@ -102,6 +104,16 @@ class EvidenceSelector:
             if not isinstance(parsed, dict) or set(parsed) != {"indices"}:
                 raise InferenceSchemaError("selector_invalid_schema")
             indices = parsed["indices"]
+            # Opt-in only: duplicates and excess valid selections do not change
+            # the meaning of an existing candidate. Never guess an invalid ID.
+            if (self.normalize_indices and isinstance(indices, list)
+                    and all(type(i) is int and 0 <= i < len(candidates) for i in indices)):
+                normalized = list(dict.fromkeys(indices))[:limit]
+                if normalized != indices:
+                    logging.getLogger(__name__).warning(json.dumps(dict(
+                        event="selector_indices_normalized", returned_count=len(indices),
+                        accepted_count=len(normalized), selection_limit=limit)))
+                indices = normalized
             if (not isinstance(indices, list) or len(indices) > limit
                     or any(type(i) is not int or not 0 <= i < len(candidates) for i in indices)
                     or len(set(indices)) != len(indices)):

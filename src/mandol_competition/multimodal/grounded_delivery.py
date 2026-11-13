@@ -100,6 +100,9 @@ def deliver(config, plan, media):
                 parts.append({'type': 'text', 'text': extra})
         if note := ocr_delivery_note(unit, namespace=config.namespace):
             parts.append({'type': 'text', 'text': note})
+        from .source_fallback import delivery_note
+        if note := delivery_note(unit):
+            parts.append({'type':'text','text':note})
         return parts
 
     results = []
@@ -112,4 +115,8 @@ def deliver(config, plan, media):
             parts.extend(content(source.unit, unit.uid))
         results.append(dict(id=unit.uid, score=float(score), content=parts))
     notes.attach(results)
+    if plan.review_incomplete_reason and results:
+        results[0]['content'].append({'type': 'text', 'text':
+            '[Evidence review status]\nReview incomplete: the selector response was invalid. '
+            'Returned original sources retain their retrieval order; evidence selection is unverified.'})
     return {'data': results}

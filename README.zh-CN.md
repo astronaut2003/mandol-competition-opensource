@@ -4,7 +4,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**本仓库是 Mandol 参加 Agent Memory Leaderboard（AML）的正式参赛版本，覆盖文本（T0）、代码（C0）和多模态（M0）三个赛道。**
+**本仓库公开 Mandol 的 AML 三赛道实现，以及版本化的后续修复。**
+
+当前复现版本为 `mm-source-preserving-add-20261113-v3`，包含多模态提取恢复与原始证据保留。原公开 M0 基线保留在提交 [`1be0776`](https://github.com/astronaut2003/mandol-competition-opensource/tree/1be077658277b020e528db42242cb7a146b9cc19)。新版本的 Add 失败处理与原版本不同，详见[版本说明](docs/releases/mm-source-preserving-add-20261113-v3.md)。
 
 Mandol 面向需要长期记忆的智能体，研究记忆组织、语义结构与混合检索。本项目沿用其记忆组织与检索设计，提供面向对话历史、工程经验和图文交互的持久化记忆服务：通过 `Add` 写入信息，通过 `Search` 返回相关来源证据。
 
@@ -90,8 +92,10 @@ Qdrant 启动、VLM 地址配置和共享模型配额设置见[本地部署](doc
 ```bash
 .venv/bin/python scripts/start_api.py textual --config configs/local/deployment.toml
 .venv/bin/python scripts/start_api.py code --config configs/local/deployment.toml
-.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml
+.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml --initialize
 ```
+
+`--initialize` 仅用于多模态首次空库初始化；已有数据库时会拒绝执行。后续启动去掉该参数，使用快速启动路径。
 
 默认 API 端口依次为 **18600、18601、18602**。每赛道使用一个 worker，支持 8 个执行中请求和 8 个等待请求。启动器在启动前校验所选方法的配置和文件摘要。
 

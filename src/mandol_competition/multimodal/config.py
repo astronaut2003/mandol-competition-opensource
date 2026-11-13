@@ -54,7 +54,11 @@ class MultimodalConfig:
     search_policy: str = "m0-original-v1"
     # Search-only overlay: never enters the immutable encoding/storage profile.
     evidence_policy: str = "baseline"
+    full_database_audit: bool = True
     vision_failure_policy: str = "degrade"
+    # Legacy/development construction keeps its previous policy. The new strict
+    # serving configuration enables source preservation unless explicitly disabled.
+    vision_source_fallback: bool = False
     embedding_model_name: str | None = None
     embedding_dim: int | None = None
     max_graphs: int = 64
@@ -80,6 +84,12 @@ class MultimodalConfig:
     profiling_path: Path | None = None
 
     def __post_init__(self) -> None:
+        if type(self.full_database_audit) is not bool:
+            raise ConfigurationError('full_database_audit must be a bool')
+        if type(self.vision_source_fallback) is not bool:
+            raise ConfigurationError('vision_source_fallback must be a bool')
+        if self.vision_source_fallback and self.vision_failure_policy != 'retry-required-v1':
+            raise ConfigurationError('source fallback requires bounded strict visual recovery')
         if self.vlm_backend == 'openai_compat':
             from mandol_competition.inference.generation import generation_route
             route = generation_route(self.vlm_base_url, self.vlm_request_model or self.vlm_model,
@@ -142,7 +152,17 @@ class MultimodalConfig:
 @lru_cache(maxsize=1)
 def get_config() -> MultimodalConfig:
     """Read the runtime configuration once from environment variables."""
+    audit = os.getenv('MANDOL_MM_FULL_DATABASE_AUDIT', '1')
+    if audit not in {'0', '1'}:
+        raise ConfigurationError('MANDOL_MM_FULL_DATABASE_AUDIT must be 0 or 1')
+    failure_policy = os.getenv('MANDOL_MM_VISION_FAILURE_POLICY', 'degrade')
+    source_fallback = os.getenv('MANDOL_MM_VISION_SOURCE_FALLBACK',
+        '1' if failure_policy == 'retry-required-v1' else '0')
+    if source_fallback not in {'0', '1'}:
+        raise ConfigurationError('MANDOL_MM_VISION_SOURCE_FALLBACK must be 0 or 1')
     return MultimodalConfig(
+        full_database_audit=audit == '1',
+        vision_source_fallback=source_fallback == '1',
         add_timeout_seconds=float(os.getenv("MANDOL_MM_ADD_TIMEOUT_SECONDS", "1800")),
         search_timeout_seconds=float(os.getenv("MANDOL_MM_SEARCH_TIMEOUT_SECONDS", "1800")),
         env=os.getenv("MANDOL_MM_ENV", "dev"),

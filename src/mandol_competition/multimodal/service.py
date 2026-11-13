@@ -73,7 +73,9 @@ def selector_candidate_text(unit: MemoryUnit) -> str:
     result = '\n'.join(texts)
     from .ocr_provenance import incomplete_ocr_note
     note = incomplete_ocr_note(unit)
-    return result + ('\n' + note if note else '')
+    from .source_fallback import delivery_note
+    source_note = delivery_note(unit)
+    return result + ('\n' + note if note else '') + ('\n' + source_note if source_note else '')
 
 
 def _timestamp(message: Message, images: dict[int, DecodedImage]) -> str | None:
@@ -199,6 +201,8 @@ class AddService:
             content_parts: list[dict[str, Any]] = []
             images: list[RenderImage] = []
             ocr_readability = []
+            source_only = []
+            quality_statuses = []
             degraded = False
             for part_index, part in enumerate(parts):
                 if isinstance(part, TextPart):
@@ -208,14 +212,23 @@ class AddService:
                 image = decoded[part_index]
                 record = media.put(image)
                 content_parts.append({"type": "image", "media_id": record.media_id})
+                inputs = dict(image_data_uri=part.image_url.url,context_text=dialogue,
+                    image_position=len(images),image_count=image_count)
+                from .source_fallback import restore as restore_source
+                from .vlm.openai_compat import VisionExtractionUnavailable
                 try:
-                    extraction = (preparation.extract if preparation is not None else vision.extract)(
-                        **({"key": f"{message_index}:{part_index}", "vision": vision} if preparation is not None else {}),
-                        image_data_uri=part.image_url.url,
-                        context_text=dialogue,
-                        image_position=len(images),
-                        image_count=image_count,
-                    )
+                    extraction = restore_source(self.config,preparation,f'{message_index}:{part_index}',vision,inputs)
+                    if extraction is None:
+                        extraction = (preparation.extract if preparation is not None else vision.extract)(
+                            **({"key": f"{message_index}:{part_index}", "vision": vision} if preparation is not None else {}),
+                            image_data_uri=part.image_url.url,
+                            context_text=dialogue,
+                            image_position=len(images),
+                            image_count=image_count,
+                        )
+                except VisionExtractionUnavailable as exc:
+                    extraction = restore_source(self.config,preparation,f'{message_index}:{part_index}',vision,inputs,error=exc)
+                    if extraction is None:raise
                 except ExtractionError as exc:
                     if self.config.vision_failure_policy == "retry-required-v1":
                         from .vlm.openai_compat import VisionExtractionUnavailable
@@ -227,6 +240,9 @@ class AddService:
                         schema_version=self.config.schema_version,
                     )
                 images.append(RenderImage(record.media_id, extraction, _location(image)))
+                if preparation is not None:
+                    retained=preparation.value.get('source_only',{}).get(f'{message_index}:{part_index}')
+                    if retained is not None:source_only.append(deepcopy(retained['receipt']))
                 from .vlm.cache import _media_id
                 from .vlm.output_guard import verified_ocr_coverage
                 entry = (preparation.value.get('vision', {}).get(f'{message_index}:{part_index}', {})
@@ -241,6 +257,11 @@ class AddService:
                     ocr_readability.append(dict(image_position=len(images)-1, **coverage))
                     if coverage['status'] == 'incomplete':
                         degraded = True
+                retained=(preparation.value.get('source_only',{}).get(f'{message_index}:{part_index}')
+                          if preparation is not None else None)
+                quality_statuses.append('source_only' if retained is not None else
+                    'incomplete_ocr' if coverage is not None and coverage['status']=='incomplete' else
+                    'complete' if receipt is not None else 'unverified')
             unit = build_memory_unit(
                 user_id=request.user_id,
                 request_id=request.request_id,
@@ -263,6 +284,10 @@ class AddService:
                 unit.metadata["vlm_degraded"] = True
             if ocr_readability:
                 unit.metadata['visual_ocr_readability'] = ocr_readability
+            from .source_fallback import annotate
+            annotate(unit,source_only)
+            from .add_quality import annotate as annotate_quality
+            annotate_quality(unit,quality_statuses)
             units.append(unit)
         return units
 
@@ -294,9 +319,17 @@ class AddService:
                     request_id=request.request_id, body_hash=body_hash)
             if "units" in preparation.value:
                 units = [MemoryUnit(item["uid"], item["raw_data"], item["metadata"]) for item in preparation.value["units"]]
-                if strict_vision and any(unit.metadata.get("vlm_degraded") for unit in units):
+                if not self.config.vision_source_fallback and any(unit.metadata.get('visual_source_only') for unit in units):
                     from .vlm.openai_compat import VisionExtractionUnavailable
-                    raise VisionExtractionUnavailable(retry_safe=False, unknown_outcome=True)
+                    raise VisionExtractionUnavailable(retry_safe=False,unknown_outcome=False)
+                if strict_vision and any(unit.metadata.get("vlm_degraded") for unit in units):
+                    # Rebuild from the input-bound extraction ledger rather than
+                    # accepting the old marker or rejecting verified incomplete OCR.
+                    # Completed stage results need no further model dispatch.
+                    units = self.prepare_units(request, decoded_messages, preparation)
+                    preparation.value["units"] = [{"uid": unit.uid, "raw_data": unit.raw_data,
+                        "metadata": unit.metadata} for unit in units]
+                    preparation.save()
             else:
                 units = self.prepare_units(request, decoded_messages, preparation)
                 preparation.value["units"] = [{"uid": unit.uid, "raw_data": unit.raw_data, "metadata": unit.metadata} for unit in units]
@@ -553,6 +586,9 @@ class SearchService:
                 content.insert(0, {"type": "text", "text": source_text(unit)})
             if ocr_field_note is not None:
                 content.append({"type": "text", "text": ocr_field_note})
+            from .source_fallback import delivery_note
+            if note := delivery_note(unit):
+                content.append({'type':'text','text':note})
             results.append({"id": unit.uid, "content": content, "score": float(score)})
         if delivery is not None:
             delivery.attach(results)

@@ -30,6 +30,7 @@ from .output_guard import (OUTPUT_POLICY, REGION_COMPOSITE_POLICY, REGION_REVIEW
     VISION_REQUEST_OUTPUT_LIMIT, VisionOutputError)
 from .stage_state import StageState, RecoveryStateError, RecoveryBudgetExhausted
 from .base import parse_extraction, has_visual_evidence
+from .scene_guard import SceneOutputNeedsReview, scene_stream_observer, validate_scene_strings
 
 _TELEMETRY_LOCK = threading.Lock()
 PRIMARY_REVIEW_TOKENS = 1024
@@ -326,6 +327,75 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
             state.content_failure()
         raise VisionOutputError(code, retryable=False, **meta)
 
+    def field_scene():
+        from . import scene_recovery as recovery
+        if state.state['scene_recovery'] is None:
+            state.update(scene_recovery=dict(policy=recovery.policy(), pages=[]))
+        while (planned := recovery.next_page(state.state['scene_recovery'])) is not None:
+            group, page = planned
+            stage = recovery.stage(group, page)
+            previous = recovery.paid_calls(state.state['calls'], stage)
+            if len(previous) >= recovery.MAX_ATTEMPTS_PER_PAGE or len(recovery.paid_calls(
+                    state.state['calls'])) >= recovery.MAX_CALLS:
+                raise RecoveryBudgetExhausted('scene field recovery allowance exhausted')
+            # A smaller complete page replaces a failed large page; no entries
+            # are truncated or silently removed from a successful response.
+            group_had_retry = any(len(recovery.paid_calls(state.state['calls'], entry['stage'])) > 1
+                for entry in recovery.paid_calls(state.state['calls'])
+                if ':' + group + ':' in entry['stage'])
+            capacity = 1 if previous or group_had_retry else recovery.PAGE_ITEMS
+            limit = min(client.max_output_tokens, VISION_REQUEST_OUTPUT_LIMIT)
+            try:
+                usage, message, meta, _ = call(stage, recovery.messages(image_uri, context, position, count,
+                    state.state['scene_recovery'], group, page, capacity, len(previous)),
+                    dict(temperature=0., max_completion_tokens=limit,
+                         response_format=recovery.response_format(group, capacity)),
+                    observer=scene_stream_observer())
+            except SceneOutputNeedsReview:
+                observe(stage, dict(output_token_budget=limit), 'needs_review')
+                continue
+            if meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= limit:
+                observe(stage, meta, 'needs_review')
+                continue
+            if meta['finish_reason'] != 'stop' or getattr(message, 'refusal', None):
+                fail(meta, 'vision_output_finish_unverified', stage=stage)
+            try:
+                wire, _ = complete_object(getattr(message, 'content', None))
+                wire = recovery.validate_wire(group, wire, capacity)
+                completed = [entry for entry in state.state['scene_recovery']['pages'] if entry['group'] == group]
+                if (group != 'overview' and wire['has_more'] and completed
+                        and wire['items'] == completed[-1]['wire']['items']):
+                    raise SceneOutputNeedsReview('scene_page_repeated_without_progress')
+            except SceneOutputNeedsReview:
+                observe(stage, meta, 'needs_review')
+                continue
+            except (ValueError, TypeError):
+                state.content_failure()
+                observe(stage, meta, 'needs_review')
+                continue
+            progress = state.state['scene_recovery']
+            progress['pages'].append(dict(group=group, page=page, wire=wire, wire_sha256=recovery.digest(wire),
+                metadata=meta, usage=usage, capacity=capacity))
+            state.update(scene_recovery=progress)
+            observe(stage, meta, 'structure_passed')
+        record = recovery.scene_record(state.state['scene_recovery'])
+        _require_visual_payload(canonical_payload(dict(record['payload'], ocr_lines=[])), client.model)
+        state.update(scene=record)
+        observe(recovery.VERSION, record['metadata'], 'scene_retained_ocr_review')
+        return record
+
+    def recover_scene():
+        if state.state['scene_recovery'] is not None:
+            return field_scene()
+        try:
+            return bounded_scene()
+        except (SceneOutputNeedsReview, RecoveryBudgetExhausted):
+            return field_scene()
+        except VisionOutputError as exc:
+            if exc.error_class not in {'vision_output_truncated', 'vision_output_invalid_json'}:
+                raise
+            return field_scene()
+
     def bounded_scene():
         # This is a different, scene-only request, not another copy of a
         # truncated full scene+OCR schema. A historical pair of failed scene
@@ -337,10 +407,9 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
         stage = bounded_scene_stage()
         limit = min(client.max_output_tokens, VISION_REQUEST_OUTPUT_LIMIT)
         usage, message, meta, _ = call(stage, bounded_scene_messages(image_uri, context, position, count),
-            dict(temperature=0., max_completion_tokens=limit, response_format=bounded_scene_response_format()))
-        if meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= limit:
-            fail(meta, stage=stage)
-        if meta['finish_reason'] != 'stop':
+            dict(temperature=0., max_completion_tokens=limit, response_format=bounded_scene_response_format()),
+            observer=scene_stream_observer())
+        if meta['finish_reason'] not in {'stop', 'length'}:
             fail(meta, 'vision_output_finish_unverified', stage=stage)
         if getattr(message, 'refusal', None):
             fail(meta, 'vision_output_refused', stage=stage)
@@ -349,9 +418,13 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
             # Do not filter extra fields, salvage a prefix, fill missing arrays,
             # or accept a truncated body from this fallback.
             scene = VisualScene.model_validate(raw).model_dump()
+            validate_scene_strings(scene)
             _require_visual_payload(canonical_payload(dict(scene, ocr_lines=[])), client.model)
+        except SceneOutputNeedsReview:
+            raise
         except (ValueError, TypeError):
-            fail(meta, 'vision_output_invalid_json', stage=stage)
+            truncated = meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= limit
+            fail(meta, 'vision_output_truncated' if truncated else 'vision_output_invalid_json', stage=stage)
         record = dict(payload=scene, payload_sha256=digest(scene), metadata=meta,
             usage=usage, review_reason='invalid_ocr')
         state.update(scene=record)
@@ -378,61 +451,64 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
         return payload, state.state.get('final_usage'), receipt, (time.monotonic()-started)*1000
 
     scene_record = state.state.get('scene')
-    if scene_record is None and any(v.get('stage') == 'scene' and not v.get('known_rejection')
-            for v in state.state.get('calls', [])):
+    if scene_record is None and (state.state['scene_recovery'] is not None or any(
+            (v.get('stage') == 'scene' or _is_bounded_scene_stage(v.get('stage')))
+            and not v.get('known_rejection') for v in state.state.get('calls', []))):
         # Reuse historical input bindings and costs, including two old length
         # failures. Never send that same full large schema a second time.
-        scene_record = bounded_scene()
+        scene_record = recover_scene()
     if scene_record is None:
-        prior_paid_scene = [v for v in state.state.get('calls', [])
-            if v.get('stage') == 'scene' and not v.get('known_rejection')]
-        if any(_is_bounded_scene_stage(v.get('stage')) and not v.get('known_rejection')
-                for v in state.state.get('calls', [])):
-            raise RecoveryBudgetExhausted('bounded scene allowance exhausted')
-        budget = min(client.output_tokens if not prior_paid_scene else client.max_output_tokens,
-            VISION_REQUEST_OUTPUT_LIMIT)
+        budget = min(client.output_tokens, VISION_REQUEST_OUTPUT_LIMIT)
         messages = [{'role': 'system', 'content': SYSTEM}, {'role': 'user', 'content': [
             {'type': 'text', 'text': prompt}, {'type': 'image_url', 'image_url': {'url': image_uri}}]}]
-        usage, message, meta, _ = call('scene', messages, dict(temperature=0.,
-            max_completion_tokens=budget, response_format=response_format()))
-        if meta['finish_reason'] not in {'stop', 'length'}:
-            fail(meta, 'vision_output_finish_unverified')
-        if getattr(message, 'refusal', None):
-            fail(meta, 'vision_output_refused')
-        content = getattr(message, 'content', None)
-        truncated = meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= budget
-        review = 'truncated_ocr' if truncated else 'invalid_ocr'
-        raw = None
-        if not truncated:
-            try:
-                raw, syntax_repair = complete_object(content)
-                payload = canonical_payload(raw)
-            except (ValueError, TypeError):
-                payload = None
-            reason = primary_review_reason(raw['ocr_lines'], meta['completion_tokens']) if payload is not None else None
-            if payload is not None and reason is None:
-                _require_visual_payload(payload, client.model)
-                receipt = dict(policy=OUTPUT_POLICY, **meta, wire_format=FORMAT_POLICY)
-                if syntax_repair is not None:
-                    receipt['json_syntax_repair'] = syntax_repair
-                state.update(final_payload=payload, final_usage=usage, complete_receipt=receipt,
-                    coverage=dict(status='primary_verified', policy=POLICY))
-                observe('scene', meta, 'structure_passed')
-                return payload, usage, receipt, (time.monotonic()-started)*1000
-            if reason is not None:
-                review = reason
         try:
-            scene = scene_payload(raw) if raw is not None else completed_scene_prefix(content)
-        except (ValueError, TypeError):
-            observe('scene', meta, 'needs_review')
-            if not truncated:
-                state.content_failure()
-            scene_record = bounded_scene()
+            usage, message, meta, _ = call('scene', messages, dict(temperature=0.,
+                max_completion_tokens=budget, response_format=response_format()),
+                observer=scene_stream_observer(primary=True))
+        except SceneOutputNeedsReview:
+            observe('scene', dict(output_token_budget=budget), 'needs_review')
+            scene_record = recover_scene()
         else:
-            scene_record = dict(payload=scene, payload_sha256=digest(scene), metadata=meta,
-                usage=usage, review_reason=review)
-            state.update(scene=scene_record)
-            observe('scene', meta, 'scene_retained_ocr_review')
+            if meta['finish_reason'] not in {'stop', 'length'}:
+                fail(meta, 'vision_output_finish_unverified')
+            if getattr(message, 'refusal', None):
+                fail(meta, 'vision_output_refused')
+            content = getattr(message, 'content', None)
+            truncated = meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= budget
+            review = 'truncated_ocr' if truncated else 'invalid_ocr'
+            raw = None
+            if not truncated:
+                try:
+                    raw, syntax_repair = complete_object(content)
+                    payload = canonical_payload(raw)
+                    validate_scene_strings(payload)
+                except (ValueError, TypeError):
+                    payload = None
+                reason = primary_review_reason(raw['ocr_lines'], meta['completion_tokens']) if payload is not None else None
+                if payload is not None and reason is None:
+                    _require_visual_payload(payload, client.model)
+                    receipt = dict(policy=OUTPUT_POLICY, **meta, wire_format=FORMAT_POLICY)
+                    if syntax_repair is not None:
+                        receipt['json_syntax_repair'] = syntax_repair
+                    state.update(final_payload=payload, final_usage=usage, complete_receipt=receipt,
+                        coverage=dict(status='primary_verified', policy=POLICY))
+                    observe('scene', meta, 'structure_passed')
+                    return payload, usage, receipt, (time.monotonic()-started)*1000
+                if reason is not None:
+                    review = reason
+            try:
+                scene = scene_payload(raw) if raw is not None else completed_scene_prefix(content)
+                validate_scene_strings(scene)
+            except (ValueError, TypeError):
+                observe('scene', meta, 'needs_review')
+                if not truncated:
+                    state.content_failure()
+                scene_record = recover_scene()
+            else:
+                scene_record = dict(payload=scene, payload_sha256=digest(scene), metadata=meta,
+                    usage=usage, review_reason=review)
+                state.update(scene=scene_record)
+                observe('scene', meta, 'scene_retained_ocr_review')
     scene = scene_payload(scene_record['payload'])
     if digest(scene) != scene_record['payload_sha256']:
         raise RecoveryStateError('saved scene fingerprint changed')
@@ -549,8 +625,15 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
                 limit = VISION_REQUEST_OUTPUT_LIMIT
                 meta = {}
                 capacity_only = False
+                from . import ocr_concise
+                from . import ocr_strategy
+                pending_concise = ocr_concise.pending(state.state, task)
+                switched = state.state['ocr_strategy'] is not None
+                concise_result = pending_concise
                 try:
-                    usage, message, meta, _ = call(stage, crop_messages(uri, task),
+                    usage, message, meta, _ = call(ocr_concise.stage(task) if pending_concise else
+                        ocr_strategy.stage(task) if switched else stage,
+                        ocr_concise.messages(uri) if pending_concise or switched else crop_messages(uri, task),
                         dict(temperature=0., max_completion_tokens=limit, response_format=crop_response_format()),
                         observer=stream_review_callback(task))
                     if meta['finish_reason'] == 'length' or meta['completion_tokens'] is not None and meta['completion_tokens'] >= limit:
@@ -559,7 +642,25 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
                     if meta['finish_reason'] != 'stop':
                         raise OCRRecoveryNeedsReview('OCR crop finish is not verified')
                     wire, _ = complete_object(getattr(message, 'content', None))
-                    checked = validate_crop_result(task, wire, finish_reason='stop')
+                    try:
+                        checked = validate_crop_result(task, wire, finish_reason='stop')
+                    except OCRRecoveryNeedsReview:
+                        if (pending_concise or switched or getattr(message,'refusal',None)
+                                or not ocr_concise.contradictory(wire)
+                                or not ocr_concise.authorized(state.state,ocr_concise.stage(task))):
+                            raise
+                        content_failure()  # Charge the original contradiction; never refresh its allowance.
+                        usage, message, meta, _ = call(ocr_concise.stage(task),ocr_concise.messages(uri),
+                            dict(temperature=0.,max_completion_tokens=limit,response_format=crop_response_format()),
+                            observer=stream_review_callback(task))
+                        if meta['finish_reason']=='length' or meta['completion_tokens'] is not None and meta['completion_tokens']>=limit:
+                            capacity_only=True
+                            raise OCRRecoveryNeedsReview('concise OCR output truncated')
+                        if meta['finish_reason']!='stop' or getattr(message,'refusal',None):
+                            raise OCRRecoveryNeedsReview('concise OCR finish is not verified')
+                        wire,_=complete_object(getattr(message,'content',None))
+                        checked=validate_crop_result(task,wire,finish_reason='stop')
+                        concise_result=True
                 except RecoveryStateError:
                     raise
                 except OCRBlankConflictReview:
@@ -579,7 +680,10 @@ def _complete_staged(client, *, prompt, image_uri, context, position, count,
                     state.update(tasks=[t.to_payload() for t in tasks], results=results)
                     continue
                 results[task.crop_id] = dict(validated=checked.to_payload(), metadata=meta, usage=usage)
-                state.update(results=results)
+                updates=dict(results=results)
+                if concise_result and state.state['ocr_strategy'] is None:
+                    updates['ocr_strategy']=ocr_strategy.activate(task,checked,meta,usage)
+                state.update(**updates)
                 observe(stage, meta, 'structure_passed')
                 index += 1
             if restart_plan:

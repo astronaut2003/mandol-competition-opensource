@@ -68,6 +68,22 @@ def code():
     return install_qualification_trace(app, 'code')
 
 
+def _multimodal_feature_flags(old):
+    """Apply the same explicit recovery flags to every runtime topology."""
+    from mandol_competition.multimodal.config import ConfigurationError
+
+    def flag(name, default):
+        value = os.getenv(name, '1' if default else '0')
+        if value not in {'0', '1'}:
+            raise ConfigurationError(name + ' must be 0 or 1')
+        return value == '1'
+
+    policy = os.getenv('MANDOL_MM_VISION_FAILURE_POLICY', old.vision_failure_policy)
+    return dict(vision_failure_policy=policy,
+        vision_source_fallback=flag('MANDOL_MM_VISION_SOURCE_FALLBACK', policy == 'retry-required-v1'),
+        full_database_audit=flag('MANDOL_MM_FULL_DATABASE_AUDIT', old.full_database_audit))
+
+
 def multimodal():
     from mandol_competition.multimodal.api import create_app
     from mandol_competition.multimodal.config import get_config, MultimodalConfig
@@ -84,7 +100,7 @@ def multimodal():
         inference_contract=cfg.inference_contract,
         search_policy='m0-original-v1' if cfg.retrieval_policy == 'baseline' else cfg.retrieval_policy,
         evidence_policy=os.getenv('MANDOL_MM_EVIDENCE_POLICY', old.evidence_policy),
-        vision_failure_policy=os.getenv('MANDOL_MM_VISION_FAILURE_POLICY', old.vision_failure_policy),
+        **_multimodal_feature_flags(old),
         prompt_version=os.getenv('MANDOL_MM_PROMPT_VERSION', old.prompt_version),
         vlm_output_tokens=int(os.getenv('MANDOL_MM_VLM_OUTPUT_TOKENS', old.vlm_output_tokens)),
         vlm_max_output_tokens=int(os.getenv('MANDOL_MM_VLM_MAX_OUTPUT_TOKENS', old.vlm_max_output_tokens)),

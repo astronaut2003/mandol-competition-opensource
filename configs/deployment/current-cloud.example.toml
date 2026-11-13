@@ -1,4 +1,6 @@
-# Reviewed current workflow. Supply credentials through environment variables.
+# Reviewed mm-source-preserving-add-20261113-v3 workflow.
+# scripts/start_api.py selects source fallback=1 and full database audit=0.
+# Supply credentials through environment variables.
 # Use fresh, isolated storage. TOML values do not expand shell variables.
 [global]
 runtime_root = "data"

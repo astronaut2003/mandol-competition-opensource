@@ -1,7 +1,8 @@
 # Competition workflow
 
-This document describes Mandol's T0, C0 and M0 competition implementation,
-from memory ingestion through retrieval and evidence delivery.
+This document describes the `mm-source-preserving-add-20261113-v3` reproduction recipe,
+including follow-up fixes to the T0/C0/M0 implementation. See the
+[release notes](../releases/mm-source-preserving-add-20261113-v3.md) for its historical boundary.
 
 ```mermaid
 flowchart TD
@@ -51,9 +52,17 @@ and evidence formats for each track.
    retain the original image, source text, scene and validated OCR fragments.
    Mark OCR as incomplete and retain its receipt in the request ledger;
    incomplete OCR never enters the successful extraction cache.
-7. Replay the completed request from its ledger without another provider
-   dispatch. Missing validated scenes, invalid state bindings and failed
-   checkpoint persistence remain errors.
+7. If no trustworthy scene remains after confirmed content failures exhaust
+   bounded recovery, the selected `MANDOL_MM_VISION_SOURCE_FALLBACK=1` policy
+   publishes the durable original image/text and validated partial fields as
+   `source_only`. It does not create a successful extraction cache entry.
+8. Replay a completed request without another provider dispatch. Authentication,
+   invalid input, unresolved transport outcomes and failed storage/publication
+   remain errors. Source fallback applies to Add, never image-query extraction.
+9. A failed whole-scene rescue can continue through bounded scene-field pages.
+   Repetition guards stop looping scene output; actual repeated OCR text is
+   preserved. A validated concise OCR recovery can select that prompt directly
+   for later crops in the same bound input ledger.
 
 The model's maximum output capacity is 16,384 tokens; the current configured
 per-call output budget is 1,024. Those are different limits. The implementation
@@ -75,7 +84,8 @@ evidence policies remain available through their explicit configurations.
    Review is bounded to 256 fragments, 8 batches per pass, and 16 model calls.
 4. An empty response requires two complete passes rejecting every planned
    fragment. Truncated input or an exhausted review budget preserves the baseline;
-   provider or malformed-response errors propagate as typed failures.
+   malformed optional review preserves baseline results and marks review incomplete.
+   Provider errors remain typed failures.
 5. Deliver useful reviewed source context with its own attribution and prioritize
    useful original media under the existing response budget. Context does not
    consume another top_k slot or change stored canonical records.
@@ -112,3 +122,7 @@ Configure quota windows from the limits of the provider account.
 
 The integrity manifest binds the selected methods to source and resource hashes. Begin reproduction with fresh storage. Historical
 databases require their matching schema, identities and migration process.
+
+The selected recipe disables periodic paid reranker health probes and recovers
+on real requests after cooldown. Full MM database audits are opt-in; resource
+bindings, publication-frontier checks and per-hit validation remain enabled.

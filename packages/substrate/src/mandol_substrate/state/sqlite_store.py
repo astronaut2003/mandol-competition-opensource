@@ -45,6 +45,7 @@ class SQLiteStateStore:
         fault=None,
         space_policy=None,
         identity=None,
+        verify_integrity=True,
     ):
         self.space_policy = space_policy
         self.identity = identity
@@ -80,7 +81,10 @@ class SQLiteStateStore:
             self._connection.execute("PRAGMA temp_store=FILE")
             self._connection.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
             migrate(self._connection)
-            self.integrity_check()
+            if type(verify_integrity) is not bool:
+                raise ValueError('verify_integrity must be a bool')
+            if verify_integrity:
+                self.integrity_check()
             wrong = self._connection.execute(
                 "SELECT scope FROM scopes WHERE profile_hash<>? OR schema_version<>? LIMIT 1",
                 (self.profile_hash, SCHEMA_VERSION),

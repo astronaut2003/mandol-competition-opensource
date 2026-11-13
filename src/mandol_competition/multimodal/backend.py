@@ -93,7 +93,8 @@ class MultimodalBackend:
         self.state = SQLiteStateStore(config.data_dir / "state.sqlite3", self.profile,
                                      processor=processor or build_processor(self.profile), fault=self.fault,
                                      space_policy=SpacePolicy(("aml",)),
-                                     identity=ResourceIdentity("multimodal", config.namespace, config.qdrant_collection))
+                                     identity=ResourceIdentity("multimodal", config.namespace, config.qdrant_collection),
+                                     verify_integrity=config.full_database_audit)
         self.projection = None
         try:
             self.projection = projection_factory(self.state, self.profile) if projection_factory else QdrantProjectionBackend(
@@ -140,13 +141,25 @@ class MultimodalBackend:
             for scope in self.state.iter_scopes():
                 purge = self.state.purge_state(scope)
                 if purge and purge["status"] == "pending":
+                    if not self.config.full_database_audit:
+                        raise StateUnavailable('pending purge requires explicit recovery')
                     if scope.namespace != self.config.namespace:
                         raise StateUnavailable("pending purge belongs to another modality resource owner")
                     self._complete_purge(scope)
-            self.coordinator.recover()
-            self.projection.ensure_schema(Scope(self.config.namespace, "__schema_probe__"), create=True)
-            if not verify_projection(self.state, self.projection)["servable"]:
-                raise StateUnavailable("SQLite/Qdrant divergence; explicit reconciliation required")
+            if self.config.full_database_audit:
+                self.coordinator.recover()
+                self.projection.ensure_schema(Scope(self.config.namespace, "__schema_probe__"), create=True)
+                if not verify_projection(self.state, self.projection)["servable"]:
+                    raise StateUnavailable("SQLite/Qdrant divergence; explicit reconciliation required")
+            else:
+                # Explicit fast restart of an existing published resource. Do
+                # not scan memories, vectors or lexical payloads and do not
+                # silently repair an interrupted write. Per-hit checks remain.
+                for scope in self.state.iter_scopes():
+                    frontier = self.state.scope_state(scope)
+                    if not frontier['canonical_seq'] == frontier['lexical_seq'] == frontier['published_seq']:
+                        raise StateUnavailable('unpublished mutation requires explicit recovery')
+                self.projection.ensure_schema(Scope(self.config.namespace, '__schema_probe__'), create=False)
             self._started = True
 
     @contextmanager
@@ -195,7 +208,8 @@ class MultimodalBackend:
                 retrieval = RetrievalBackend(self.state, self.projection, self.coordinator,
                     self.encoders, adaptive_profile(self.profile, query), reranker=self.reranker,
                     observer=self.retrieval.observer)
-        results = retrieval.search(self.scope(user_id), query, top_k=top_k, candidate_route=route)
+        results = retrieval.search(self.scope(user_id), query, top_k=top_k, candidate_route=route,
+                                   full_audit=self.config.full_database_audit)
         return [(MemoryUnit(m.logical_uid, m.raw_data, m.metadata), score) for m, score in results]
 
     def assert_searchable(self, user_id):

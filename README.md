@@ -4,8 +4,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**Mandol Competition is Mandol's formal competition submission for the Agent
-Memory Leaderboard (AML), covering Textual (T0), Coding (C0), and Multimodal (M0).**
+**This repository publishes Mandol’s AML implementations and versioned follow-up fixes.**
+
+The current reproduction recipe is `mm-source-preserving-add-20261113-v3`. It adds bounded visual recovery and source-preserving Add. The earlier public M0 baseline remains at [`1be0776`](https://github.com/astronaut2003/mandol-competition-opensource/tree/1be077658277b020e528db42242cb7a146b9cc19). The new Add failure behavior is described in the [release notes](docs/releases/mm-source-preserving-add-20261113-v3.md).
 
 Built on Mandol's memory organization and retrieval design, this implementation
 provides persistent memory services for conversations, engineering history, and
@@ -110,8 +111,11 @@ Start each API in a separate terminal:
 ```bash
 .venv/bin/python scripts/start_api.py textual --config configs/local/deployment.toml
 .venv/bin/python scripts/start_api.py code --config configs/local/deployment.toml
-.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml
+.venv/bin/python scripts/start_api.py multimodal --config configs/local/deployment.toml --initialize
 ```
+
+Use `--initialize` only for the first Multimodal start on fresh storage. It
+refuses an existing database; omit the flag on subsequent starts.
 
 The default API ports are **18600**, **18601**, and **18602**. Each track uses one
 worker, with 8 active and 8 waiting operations. The launcher checks the selected

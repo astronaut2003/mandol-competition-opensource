@@ -62,7 +62,7 @@ def test_identity_mismatch_and_provider_error_cannot_masquerade_as_valid_results
         scores_in_input_order({'code': 'InvalidApiKey', 'message': 'secret echoed'}, 1)
 
 
-def test_health_probes_are_bounded_cached_and_invalidated_after_scoring_failure():
+def test_health_is_passive_even_after_long_idle_and_failure_requires_real_recovery():
     calls, now = [], [0.]
     def handler(request):
         calls.append(request)
@@ -74,14 +74,18 @@ def test_health_probes_are_bounded_cached_and_invalidated_after_scoring_failure(
         for _ in range(20):
             c.health()
         assert len(calls) == 1
-        now[0] = 61
+        now[0] = 3600
         c.health()
-        assert len(calls) == 2
+        assert len(calls) == 1
         # A malformed one-document score invalidates the successful observation.
         with pytest.raises(InferenceSchemaError):
             c.score('query', ['one'])
-        c.health()
-        assert len(calls) == 4
+        before=len(calls)
+        with pytest.raises(InferenceUnavailable):c.health()
+        assert len(calls) == before
+        c.score('real query', ['a','b'])
+        assert c.health() is True and len(calls) == before+1
+        assert c.attestation()['periodic_health_probes'] is False
     finally:
         c.close()
 

@@ -9,7 +9,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from .errors import InferenceAdmissionDeferred, InferenceDeadlineExceeded, InferenceIdentityError, InferenceSchemaError
+from .errors import InferenceAdmissionDeferred, InferenceDeadlineExceeded, InferenceIdentityError, InferenceSchemaError, InferenceUnavailable
 from .http import HTTPTransport, endpoint_origin
 from .models import InferenceRecipe
 
@@ -55,6 +55,9 @@ def scores_in_input_order(data, count):
 
 
 class DashScopeRerankerClient:
+    # Pools must not spend provider tokens while no business work exists.
+    paid_health_checks = True
+
     def __init__(self, endpoint=ENDPOINT, *, api_key=None, transport=None,
                  timeout=120., health_ttl=60., clock=time.monotonic):
         endpoint_origin(endpoint)
@@ -133,10 +136,11 @@ class DashScopeRerankerClient:
             return True
 
     def health(self):
-        # There is no provider /health contract. Successful real scoring is
-        # cached for at most one minute, then a bounded synthetic probe is used.
-        # A scoring error immediately invalidates that cached observation.
-        return self.validate_profile()
+        # This is last-success state, not a claim of live provider reachability.
+        # Startup admission remains explicit; health endpoints never infer.
+        if self._last_success is None:
+            raise InferenceUnavailable('reranker_has_no_successful_observation')
+        return True
 
     def attestation(self):
         from .rerank_query_views import descriptor
@@ -147,6 +151,7 @@ class DashScopeRerankerClient:
             "response_model": (self.last_response_metadata or {}).get("response_model"),
             "weights_revision_verified": False, "dtype_verified": False,
             "health_probe_cache_seconds": self._ttl,
+            "periodic_health_probes": False, "health_is_passive": True,
         }
 
     def close(self):

@@ -35,12 +35,12 @@ def test_real_six_second_budget_does_not_fail_a_three_second_health_probe(tmp_pa
             'models':{RERANK:dict(usage_limit=720000,usage_period=6,request_limit=240,request_period=6)}})
         policy.budget.acquire(RERANK,720000,until=time.monotonic()+10)
         wire.reliability=policy
-        client._last_success=time.monotonic()-61  # Cache expiry requires a real health admission.
+        client._last_success=time.monotonic()-61
         last_success=client._last_success;before=len(seen)
         pool._probe(0)
         assert pool.health() is True and len(seen)==before
         row=pool.snapshot()['replicas'][0]
-        assert row['ready'] and row['errors']==0 and row['admission_deferrals']==1
+        assert row['ready'] and row['errors']==0 and row['admission_deferrals']==0
         assert client._last_success==last_success
     finally:pool.close()
 

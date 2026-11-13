@@ -106,11 +106,13 @@ def test_unseen_query_images_prevent_absence():
 
 
 @pytest.mark.parametrize('values', [(True,), (-1,), (100,), ({},), (0,0)])
-def test_malformed_selection_stays_typed(values):
+def test_malformed_selection_preserves_original_evidence_without_a_false_absence(values):
     guard = Guard()
     guard.select = lambda **_: Selection(values,'selected',0.)
-    with pytest.raises(InferenceSchemaError):
-        review.review_sources(guard,query(),[(memory('a','Existing fact.'),.7)],NO_MEDIA)
+    pool = [(memory('a','Existing fact.'),.7)]
+    result = review.review_sources(guard,query(),pool,NO_MEDIA)
+    assert result.hits == pool and not result.complete_absence_review
+    assert result.review_incomplete_reason == 'invalid_selector_response'
 
 
 def test_provider_429_is_not_empty_or_implicitly_retried():

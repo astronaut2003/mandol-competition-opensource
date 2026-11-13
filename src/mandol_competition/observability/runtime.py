@@ -74,6 +74,9 @@ class Metrics:
             for name in ('ready_replicas', 'configured_replicas', 'capacity_degraded',
                          'queue_depth', 'queue_seconds', 'rejected', 'failovers'):
                 rows.append(f'reranker_{name}{{track="{self.track}"}} {float(snapshot[name])}')
+            for name in ('background_probes', 'request_driven_recovery'):
+                if name in snapshot:
+                    rows.append(f'reranker_{name}{{track="{self.track}"}} {int(snapshot[name])}')
             for replica in snapshot['replicas']:
                 labels = f'track="{self.track}",replica="{replica["replica"]}"'
                 for name in ('ready', 'quarantined', 'inflight', 'requests', 'successes', 'errors', 'seconds'):

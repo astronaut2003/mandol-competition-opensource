@@ -58,6 +58,9 @@ def create_pool(clients, settings=None):
         reliability = from_environment()
         if reliability is not None:
             options['queue_timeout'] = reliability.seconds
+        if clients and all(getattr(c, 'paid_health_checks', False) for c in clients):
+            options['monitor'] = False
+            options['request_driven_recovery'] = True
         return ReplicaReranker(clients, **{k: v for k, v in options.items() if k != 'endpoints'})
     except BaseException:
         # Construction owns these clients even if admission configuration fails.
@@ -92,7 +95,7 @@ class _Replica:
 class ReplicaReranker:
     def __init__(self, clients, *, max_inflight=4, max_queue=8, queue_timeout=5.,
                  cooldown=5., probe_interval=10., probe_timeout=3., warmup_timeout=60.,
-                 request_timeout=1800., monitor=True):
+                 request_timeout=1800., monitor=True, request_driven_recovery=False):
         if not 1 <= len(clients) <= 3 or max_inflight < 1 or max_queue < 0:
             raise ValueError('bounded replica capacity required')
         for seconds in (queue_timeout, cooldown, probe_interval, probe_timeout, warmup_timeout, request_timeout):
@@ -111,6 +114,7 @@ class ReplicaReranker:
         self._stop = threading.Event()
         self._thread = None
         self._monitor_enabled = monitor
+        self._request_driven_recovery = request_driven_recovery
         self._closed = False
         self._cursor = 0
         self._waiting = self._rejected = self._failovers = 0
@@ -149,8 +153,9 @@ class ReplicaReranker:
                     r.client.validate_profile()
                     # Re-entry requires a real finite complete-pair warmup,
                     # not just an alive TCP socket or recipe declaration.
-                    values = r.client.rerank('memory', ['memory health probe'])
-                    self._check_scores(values, 1)
+                    if not getattr(r.client, 'paid_health_checks', False):
+                        values = r.client.rerank('memory', ['memory health probe'])
+                        self._check_scores(values, 1)
                 else:
                     r.client.health()
         except (InferenceAdmissionDeferred, InferenceDeadlineExceeded) as exc:
@@ -214,9 +219,12 @@ class ReplicaReranker:
                     if self._closed:
                         raise InferenceUnavailable('reranker_pool_closed')
                     eligible = [i for i, r in enumerate(self._replicas)
-                                if i not in excluded and r.ready and not r.quarantined]
+                                if i not in excluded and not r.quarantined and
+                                (r.ready or self._request_driven_recovery and r.calls > 0
+                                 and time.monotonic() >= r.retry_at)]
                     available = [i for i in eligible if not self._replicas[i].probing
-                                 and self._replicas[i].inflight < self.max_inflight]
+                                 and self._replicas[i].inflight <
+                                 (self.max_inflight if self._replicas[i].ready else 1)]
                     if available:
                         index = min(available, key=lambda i: (self._replicas[i].inflight,
                                     (i - self._cursor) % len(self._replicas)))
@@ -294,6 +302,10 @@ class ReplicaReranker:
                 else:
                     with self._condition:
                         r.successes += 1
+                        r.ready = True
+                        r.consecutive_errors = 0
+                        r.error_class = 'none'
+                        r.last_http_status = r.provider_error_code = r.provider_request_id = None
                     return values
                 finally:
                     with self._condition:
@@ -308,6 +320,8 @@ class ReplicaReranker:
         with self._condition:
             ready = sum(r.ready and not r.quarantined for r in self._replicas)
             return {'uptime_seconds': time.monotonic() - self._created,
+                    'background_probes': self._monitor_enabled,
+                    'request_driven_recovery': self._request_driven_recovery,
                     'ready_replicas': ready, 'configured_replicas': len(self._replicas),
                     'capacity_degraded': ready < len(self._replicas), 'queue_depth': self._waiting,
                     'queue_seconds': self._queue_seconds, 'rejected': self._rejected, 'failovers': self._failovers,
